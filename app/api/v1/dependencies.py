@@ -20,6 +20,7 @@ from app.services.rag.embedding_service import EmbeddingService
 from app.services.rag.rag_service import RagService
 from app.services.rag.vector_store import SQLiteVectorStore
 from app.services.web_search import WebSearchService
+from app.services.summarizer_service import SummarizerService
 
 
 @lru_cache
@@ -93,3 +94,9 @@ def get_chat_service(
         rag_service=rag_service,
         history_service=history_service,
     )
+
+def get_summarizer_service(
+    model_service: ModelService = Depends(get_model_service),
+    settings=Depends(get_settings),
+) -> SummarizerService:
+    return SummarizerService(model_service=model_service, settings=settings)
