@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl" class="h-full">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{{ app_name or "Chat Console" }}</title>
+
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
+    rel="stylesheet"
+  />
+  <link rel="stylesheet" href="{{ url_for('static', path='css/app.css') }}" />
+
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            bg: "#14181C",
+            panel: "#1B2126",
+            elevated: "#222930",
+            border: "#2A3138",
+            ink: "#E7E4DC",
+            dim: "#8B9198",
+            accent: "#C98A3E",
+            accentSoft: "rgba(201,138,62,0.12)",
+            danger: "#C15B4A",
+          },
+          fontFamily: {
+            sans: ["Vazirmatn", "system-ui", "sans-serif"],
+            mono: ["JetBrains Mono", "monospace"],
+          },
+        },
+      },
+    };
+  </script>
+</head>
+<body
+  class="h-full bg-bg text-ink font-sans antialiased overflow-hidden"
+  data-api-prefix="{{ api_prefix | default('/api/v1') }}"
+>
+  {% block content %}{% endblock %}
+</body>
+</html>
