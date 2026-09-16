@@ -85,7 +85,7 @@ export const api = {
   },
 
   async summarize(text, maxLength = 150) {
-    return request(`/summarizer/summarize`, {
+    return request(`/summarize`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ text, max_length: maxLength }),
@@ -93,7 +93,7 @@ export const api = {
   },
 
   async summarizeByQuery(text, query, maxLength = 150) {
-    return request(`/summarizer/summarize/by-query`, {
+    return request(`/summarize/by-query`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ text, query, max_length: maxLength }),

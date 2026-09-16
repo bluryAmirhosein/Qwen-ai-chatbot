@@ -29,13 +29,20 @@
 
     <nav id="conversation-list" class="flex-1 overflow-y-auto px-2 space-y-1 pb-3"></nav>
 
-    <div class="p-3 border-t border-border">
+    <div class="p-3 border-t border-border space-y-1.5">
       <button
         id="rag-toggle-btn"
         class="w-full flex items-center gap-2 text-sm text-dim hover:text-ink transition-colors"
       >
         <span class="font-mono text-[10px] px-1.5 py-0.5 rounded bg-elevated border border-border">RAG</span>
         مدیریت اسناد
+      </button>
+      <button
+        id="summarizer-open-btn"
+        class="w-full flex items-center gap-2 text-sm text-dim hover:text-ink transition-colors"
+      >
+        <span class="font-mono text-[10px] px-1.5 py-0.5 rounded bg-elevated border border-border">SUM</span>
+        خلاصه‌سازی متن
       </button>
     </div>
   </aside>
@@ -140,6 +147,15 @@
             class="w-14 bg-panel border border-border rounded px-1.5 py-1 font-mono text-xs focus:outline-none focus:border-accent"
           />
         </div>
+
+        <button
+          id="summarizer-shortcut-btn"
+          type="button"
+          title="خلاصه‌سازی متن"
+          class="param-toggle"
+        >
+          <span>summarize</span>
+        </button>
       </div>
     </footer>
   </main>
@@ -163,6 +179,94 @@
     </div>
     <div id="rag-doc-list" class="flex-1 overflow-y-auto"></div>
   </aside>
+
+  <!-- Summarizer modal -->
+  <div id="summarizer-backdrop" class="hidden fixed inset-0 bg-black/50 z-40 flex items-center justify-center p-4">
+    <div id="summarizer-modal" class="w-full max-w-lg max-h-[85vh] bg-panel border border-border rounded-lg flex flex-col overflow-hidden">
+      <div class="h-14 flex items-center justify-between px-4 border-b border-border shrink-0">
+        <h2 class="text-sm font-medium">خلاصه‌سازی متن</h2>
+        <button id="summarizer-close-btn" class="text-dim hover:text-ink text-lg leading-none">×</button>
+      </div>
+
+      <div class="flex-1 overflow-y-auto p-4 space-y-3">
+        <div>
+          <div class="flex items-center justify-between mb-1.5">
+            <label for="summarizer-text-input" class="text-xs text-dim">متن ورودی</label>
+            <button
+              id="summarizer-use-context-btn"
+              type="button"
+              class="hidden text-xs text-accent hover:opacity-80"
+            >
+              استفاده از فایل پیوست‌شده
+            </button>
+          </div>
+          <textarea
+            id="summarizer-text-input"
+            rows="7"
+            placeholder="متنی که می‌خواهید خلاصه شود را اینجا وارد یا جای‌گذاری کنید..."
+            class="w-full bg-elevated border border-border rounded-md px-3 py-2 text-sm resize-none focus:outline-none focus:ring-1 focus:ring-accent"
+          ></textarea>
+        </div>
+
+        <div class="flex items-center gap-2">
+          <label class="param-toggle">
+            <input type="radio" name="summarizer-mode" id="summarizer-mode-general" value="general" checked />
+            <span>خلاصه عمومی</span>
+          </label>
+          <label class="param-toggle">
+            <input type="radio" name="summarizer-mode" id="summarizer-mode-query" value="query" />
+            <span>خلاصه بر اساس پرسش</span>
+          </label>
+        </div>
+
+        <div id="summarizer-query-wrap" class="hidden">
+          <label for="summarizer-query-input" class="text-xs text-dim block mb-1.5">پرسش / محور خلاصه</label>
+          <input
+            id="summarizer-query-input"
+            type="text"
+            placeholder="مثلاً: نتیجه‌گیری نهایی چیست؟"
+            class="w-full bg-elevated border border-border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-accent"
+          />
+        </div>
+
+        <div class="flex items-center gap-2" dir="ltr">
+          <span class="text-dim font-mono text-xs">max_length</span>
+          <input
+            id="summarizer-max-length"
+            type="number"
+            min="20"
+            max="1000"
+            step="10"
+            value="150"
+            class="w-20 bg-elevated border border-border rounded px-2 py-1.5 font-mono text-xs focus:outline-none focus:border-accent"
+          />
+          <span class="text-dim text-xs">کلمه</span>
+        </div>
+
+        <button
+          id="summarizer-submit-btn"
+          class="w-full bg-accent text-bg rounded-md py-2.5 text-sm font-medium hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed transition-opacity"
+        >
+          خلاصه کن
+        </button>
+
+        <div id="summarizer-result-wrap" class="hidden space-y-2 pt-1 border-t border-border">
+          <div class="msg-bubble text-sm text-ink pt-2" id="summarizer-result-text"></div>
+          <p id="summarizer-result-stats" class="text-xs text-dim font-mono" dir="ltr"></p>
+          <div class="flex items-center gap-2">
+            <button id="summarizer-copy-btn" class="text-xs text-dim hover:text-ink border border-border rounded px-2.5 py-1.5">
+              کپی
+            </button>
+            <button id="summarizer-insert-btn" class="text-xs text-dim hover:text-ink border border-border rounded px-2.5 py-1.5">
+              درج در پیام
+            </button>
+          </div>
+        </div>
+
+        <p id="summarizer-error" class="hidden text-xs text-danger"></p>
+      </div>
+    </div>
+  </div>
 
   <div id="drawer-backdrop" class="hidden fixed inset-0 bg-black/50 z-20"></div>
   <div id="sidebar-backdrop" class="hidden fixed inset-0 bg-black/50 z-20"></div>

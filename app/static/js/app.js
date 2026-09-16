@@ -10,6 +10,7 @@ const state = {
   contextText: null,
   contextFilename: null,
   sending: false,
+  summarizing: false,
 };
 
 const el = {
@@ -48,7 +49,28 @@ const el = {
   ragUploadInput: document.getElementById("rag-upload-input"),
   ragUploadStatus: document.getElementById("rag-upload-status"),
   drawerBackdrop: document.getElementById("drawer-backdrop"),
+
+  summarizerOpenBtn: document.getElementById("summarizer-open-btn"),
+  summarizerShortcutBtn: document.getElementById("summarizer-shortcut-btn"),
+  summarizerBackdrop: document.getElementById("summarizer-backdrop"),
+  summarizerCloseBtn: document.getElementById("summarizer-close-btn"),
+  summarizerTextInput: document.getElementById("summarizer-text-input"),
+  summarizerUseContextBtn: document.getElementById("summarizer-use-context-btn"),
+  summarizerModeGeneral: document.getElementById("summarizer-mode-general"),
+  summarizerModeQuery: document.getElementById("summarizer-mode-query"),
+  summarizerQueryWrap: document.getElementById("summarizer-query-wrap"),
+  summarizerQueryInput: document.getElementById("summarizer-query-input"),
+  summarizerMaxLength: document.getElementById("summarizer-max-length"),
+  summarizerSubmitBtn: document.getElementById("summarizer-submit-btn"),
+  summarizerResultWrap: document.getElementById("summarizer-result-wrap"),
+  summarizerResultText: document.getElementById("summarizer-result-text"),
+  summarizerResultStats: document.getElementById("summarizer-result-stats"),
+  summarizerCopyBtn: document.getElementById("summarizer-copy-btn"),
+  summarizerInsertBtn: document.getElementById("summarizer-insert-btn"),
+  summarizerError: document.getElementById("summarizer-error"),
 };
+
+let lastSummary = "";
 
 // --- helpers ---
 
@@ -187,6 +209,7 @@ function setContext(filename, content) {
   el.contextChipLabel.textContent = filename;
   el.contextChip.classList.remove("hidden");
   el.contextChip.classList.add("flex");
+  el.summarizerUseContextBtn.classList.remove("hidden");
 }
 
 function clearContext() {
@@ -195,6 +218,7 @@ function clearContext() {
   el.contextChip.classList.add("hidden");
   el.contextChip.classList.remove("flex");
   el.fileInput.value = "";
+  el.summarizerUseContextBtn.classList.add("hidden");
 }
 
 async function handleFileAttach(e) {
@@ -330,6 +354,105 @@ async function handleDocumentUpload(e) {
   }
 }
 
+// --- summarizer modal ---
+
+function isQueryMode() {
+  return el.summarizerModeQuery.checked;
+}
+
+function updateSummarizerModeUI() {
+  const showQuery = isQueryMode();
+  el.summarizerQueryWrap.classList.toggle("hidden", !showQuery);
+}
+
+function resetSummarizerResult() {
+  lastSummary = "";
+  el.summarizerResultWrap.classList.add("hidden");
+  el.summarizerResultText.innerHTML = "";
+  el.summarizerResultStats.textContent = "";
+  el.summarizerError.classList.add("hidden");
+  el.summarizerError.textContent = "";
+}
+
+function openSummarizerModal() {
+  el.summarizerBackdrop.classList.remove("hidden");
+  el.summarizerBackdrop.classList.add("flex");
+  if (!el.summarizerTextInput.value && state.contextText) {
+    el.summarizerTextInput.value = state.contextText;
+  }
+  el.summarizerTextInput.focus();
+}
+
+function closeSummarizerModal() {
+  el.summarizerBackdrop.classList.add("hidden");
+  el.summarizerBackdrop.classList.remove("flex");
+}
+
+function useContextAsSummarizerInput() {
+  if (!state.contextText) return;
+  el.summarizerTextInput.value = state.contextText;
+}
+
+async function handleSummarize() {
+  const text = el.summarizerTextInput.value.trim();
+  if (!text || state.summarizing) return;
+
+  const queryMode = isQueryMode();
+  const query = el.summarizerQueryInput.value.trim();
+  if (queryMode && !query) {
+    el.summarizerError.textContent = "برای خلاصه بر اساس پرسش، پرسش را وارد کنید.";
+    el.summarizerError.classList.remove("hidden");
+    return;
+  }
+
+  const maxLength = Number(el.summarizerMaxLength.value) || 150;
+
+  state.summarizing = true;
+  el.summarizerSubmitBtn.disabled = true;
+  el.summarizerSubmitBtn.textContent = "در حال خلاصه‌سازی...";
+  resetSummarizerResult();
+
+  try {
+    const result = queryMode
+      ? await api.summarizeByQuery(text, query, maxLength)
+      : await api.summarize(text, maxLength);
+
+    lastSummary = result.summary;
+    el.summarizerResultText.innerHTML = renderMarkdownLite(result.summary);
+    el.summarizerResultStats.textContent = `${result.original_length} → ${result.summary_length} words`;
+    el.summarizerResultWrap.classList.remove("hidden");
+  } catch (err) {
+    el.summarizerError.textContent = `خطا: ${err.message}`;
+    el.summarizerError.classList.remove("hidden");
+  } finally {
+    state.summarizing = false;
+    el.summarizerSubmitBtn.disabled = false;
+    el.summarizerSubmitBtn.textContent = "خلاصه کن";
+  }
+}
+
+async function copySummaryToClipboard() {
+  if (!lastSummary) return;
+  try {
+    await navigator.clipboard.writeText(lastSummary);
+    el.summarizerCopyBtn.textContent = "کپی شد";
+    setTimeout(() => {
+      el.summarizerCopyBtn.textContent = "کپی";
+    }, 1500);
+  } catch (err) {
+    console.error("Clipboard write failed:", err);
+  }
+}
+
+function insertSummaryIntoInput() {
+  if (!lastSummary) return;
+  const existing = el.input.value;
+  el.input.value = existing ? `${existing}\n\n${lastSummary}` : lastSummary;
+  autoResizeInput();
+  closeSummarizerModal();
+  el.input.focus();
+}
+
 // --- mobile sidebar ---
 
 function openMobileSidebar() {
@@ -382,6 +505,19 @@ el.ragUploadInput.addEventListener("change", handleDocumentUpload);
 
 el.sidebarToggleBtn.addEventListener("click", openMobileSidebar);
 el.sidebarBackdrop.addEventListener("click", closeMobileSidebar);
+
+el.summarizerOpenBtn.addEventListener("click", openSummarizerModal);
+el.summarizerShortcutBtn.addEventListener("click", openSummarizerModal);
+el.summarizerCloseBtn.addEventListener("click", closeSummarizerModal);
+el.summarizerBackdrop.addEventListener("click", (e) => {
+  if (e.target === el.summarizerBackdrop) closeSummarizerModal();
+});
+el.summarizerUseContextBtn.addEventListener("click", useContextAsSummarizerInput);
+el.summarizerModeGeneral.addEventListener("change", updateSummarizerModeUI);
+el.summarizerModeQuery.addEventListener("change", updateSummarizerModeUI);
+el.summarizerSubmitBtn.addEventListener("click", handleSummarize);
+el.summarizerCopyBtn.addEventListener("click", copySummaryToClipboard);
+el.summarizerInsertBtn.addEventListener("click", insertSummaryIntoInput);
 
 // --- init ---
 
