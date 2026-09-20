@@ -1,0 +1,83 @@
+name: qwen-chatbot
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        # CPU wheels by default. For GPU see the notes at the bottom of this service.
+        TORCH_INDEX_URL: ${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cpu}
+    image: qwen-chatbot:latest
+    restart: unless-stopped
+    init: true
+    # Optional: DEVICE, MAX_NEW_TOKENS, TEMPERATURE, LOG_LEVEL, ... are picked up from .env if it exists.
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      # Container-specific values. They always win over .env
+      # (e.g. the Windows path D:/ai-models/... from .env.example).
+      HOST: 0.0.0.0
+      PORT: "8000"
+      # The app is only reachable through nginx (no published port), so trusting the proxy headers is safe.
+      FORWARDED_ALLOW_IPS: "*"
+      # HF cache layout lives directly in ai-models/ (models--Qwen--Qwen3-1.7B, models--intfloat--...).
+      MODEL_CACHE_DIR: ${CONTAINER_MODEL_CACHE_DIR:-/app/ai-models}
+      RAG_DB_PATH: /app/data/rag.db
+      HISTORY_DB_PATH: /app/data/history.db
+      LOG_FILE: /app/logs/app.log
+      # Use only what is already inside ai-models/ and never contact the Hugging Face Hub.
+      # A missing model fails loudly instead of being silently downloaded again.
+      HF_HUB_OFFLINE: ${HF_HUB_OFFLINE:-1}
+      TRANSFORMERS_OFFLINE: ${HF_HUB_OFFLINE:-1}
+    volumes:
+      # ./ai-models sits right next to ./app. create_host_path=false makes compose fail
+      # if the folder is missing, instead of creating an empty one.
+      - type: bind
+        source: ./ai-models
+        target: /app/ai-models
+        bind:
+          create_host_path: false
+      - app_data:/app/data   # rag.db + history.db
+      - app_logs:/app/logs
+    expose:
+      - "8000"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 90s
+    # --- GPU (optional) ---
+    # 1) build with TORCH_INDEX_URL=https://pypi.org/simple
+    # 2) DEVICE=auto (or cuda) in .env
+    # 3) uncomment:
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
+  nginx:
+    image: nginx:stable-alpine
+    restart: unless-stopped
+    depends_on:
+      app:
+        condition: service_healthy
+    ports:
+      - "${HTTP_PORT:-8080}:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      # Same files FastAPI mounts at /static, served directly by nginx.
+      - ./app/static:/usr/share/nginx/html/static:ro
+
+volumes:
+  app_data:
+  app_logs:

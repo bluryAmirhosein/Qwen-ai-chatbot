@@ -1,0 +1,31 @@
+# Model weights are multiple GB: they are bind-mounted at runtime, never sent to the build context.
+ai-models/
+data/
+logs/
+model_cache/
+
+# Secrets / local config
+.env
+.env.*
+!.env.example
+
+# VCS, virtualenvs, caches
+.git/
+.gitignore
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+
+# Not needed inside the image
+tests/
+nginx/
+docker-compose*.yml
+Dockerfile
+README.md
+.idea/
+.DS_Store
+Thumbs.db
