@@ -11,6 +11,9 @@ services:
     image: qwen-chatbot:latest
     restart: unless-stopped
     init: true
+    depends_on:
+      postgres:
+        condition: service_healthy
     # Optional: DEVICE, MAX_NEW_TOKENS, TEMPERATURE, LOG_LEVEL, ... are picked up from .env if it exists.
     env_file:
       - path: .env
@@ -31,6 +34,9 @@ services:
       # A missing model fails loudly instead of being silently downloaded again.
       HF_HUB_OFFLINE: ${HF_HUB_OFFLINE:-1}
       TRANSFORMERS_OFFLINE: ${HF_HUB_OFFLINE:-1}
+      # Built from the same POSTGRES_* vars used to provision the postgres service below,
+      # so the two never drift apart.
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-qwen}:${POSTGRES_PASSWORD:-qwen}@postgres:5432/${POSTGRES_DB:-qwen_chatbot}
     volumes:
       # ./ai-models sits right next to ./app. create_host_path=false makes compose fail
       # if the folder is missing, instead of creating an empty one.
@@ -44,11 +50,7 @@ services:
     expose:
       - "8000"
     healthcheck:
-      test:
-        - CMD
-        - python
-        - -c
-        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"
+      test: ["CMD-SHELL", "curl -f http://127.0.0.1:8000/health || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 5
@@ -64,6 +66,30 @@ services:
     #         - driver: nvidia
     #           count: all
     #           capabilities: [gpu]
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-qwen}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-qwen}
+      POSTGRES_DB: ${POSTGRES_DB:-qwen_chatbot}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    # Not exposed to the host by default; only the app/nginx containers need it.
+    # Uncomment to reach it from your machine (e.g. with a GUI client):
+    # ports:
+    #   - "${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-qwen} -d ${POSTGRES_DB:-qwen_chatbot}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
 
   nginx:
     image: nginx:stable-alpine
@@ -81,3 +107,4 @@ services:
 volumes:
   app_data:
   app_logs:
+  postgres_data:
