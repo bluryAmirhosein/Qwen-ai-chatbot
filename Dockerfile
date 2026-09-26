@@ -26,6 +26,10 @@ COPY requirements.txt .
 RUN pip install --extra-index-url "${TORCH_INDEX_URL}" -r requirements.txt
 
 COPY --chown=app:app app ./app
+COPY --chown=app:app alembic ./alembic
+COPY --chown=app:app alembic.ini .
+COPY --chown=app:app entrypoint.sh .
+RUN chmod +x entrypoint.sh
 
 # Mount points: ai-models is bind-mounted from the host, data/logs are named volumes.
 RUN mkdir -p /app/ai-models /app/data /app/logs \
@@ -35,6 +39,5 @@ USER app
 
 EXPOSE 8000
 
-# Single process on purpose: the model lives in memory as a singleton,
-# more workers would load it (and eat RAM) once per worker.
-CMD ["python", "-m", "app.main"]
+# Run pending migrations, then start the (single-process) app.
+ENTRYPOINT ["./entrypoint.sh"]

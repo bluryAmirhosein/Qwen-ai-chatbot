@@ -9,6 +9,7 @@ services:
         # CPU wheels by default. For GPU see the notes at the bottom of this service.
         TORCH_INDEX_URL: ${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cpu}
     image: qwen-chatbot:latest
+    container_name: qwen-app
     restart: unless-stopped
     init: true
     depends_on:
@@ -36,7 +37,7 @@ services:
       TRANSFORMERS_OFFLINE: ${HF_HUB_OFFLINE:-1}
       # Built from the same POSTGRES_* vars used to provision the postgres service below,
       # so the two never drift apart.
-      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-qwen}:${POSTGRES_PASSWORD:-qwen}@postgres:5432/${POSTGRES_DB:-qwen_chatbot}
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-qwen}:${POSTGRES_PASSWORD:-qwen}@postgres:5432/${POSTGRES_DB:-qwen_chatbot}
     volumes:
       # ./ai-models sits right next to ./app. create_host_path=false makes compose fail
       # if the folder is missing, instead of creating an empty one.
@@ -47,6 +48,7 @@ services:
           create_host_path: false
       - app_data:/app/data   # rag.db + history.db
       - app_logs:/app/logs
+      - ./alembic/versions:/app/alembic/versions
     expose:
       - "8000"
     healthcheck:
@@ -69,7 +71,10 @@ services:
 
   postgres:
     image: postgres:16-alpine
+    container_name: qwen-db
     restart: unless-stopped
+    ports:
+      - "5432:5432"
     env_file:
       - path: .env
         required: false
@@ -94,6 +99,7 @@ services:
   nginx:
     image: nginx:stable-alpine
     restart: unless-stopped
+    container_name: qwen-nginx
     depends_on:
       app:
         condition: service_healthy

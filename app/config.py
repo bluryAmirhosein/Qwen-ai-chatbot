@@ -16,6 +16,11 @@ class Settings(BaseSettings):
     app_name: str = "Qwen Chatbot API"
     api_v1_prefix: str = "/api/v1"
 
+    # Database settings
+    # Docker Compose sets DATABASE_URL directly (built from POSTGRES_* vars);
+    # this default only applies for local, non-docker runs.
+    database_url: str = "postgresql+asyncpg://qwen:qwen@localhost:5432/qwen_chatbot"
+
     # Model settings
     model_name: str = "Qwen/Qwen3-1.7B"
     # Where the (large) model weights are cached on disk.
