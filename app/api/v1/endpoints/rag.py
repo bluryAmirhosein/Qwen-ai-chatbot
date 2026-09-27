@@ -13,7 +13,7 @@ router = APIRouter()
     response_model=IngestResponse,
     summary="Ingest a document into the RAG index",
     description="Extracts text from the uploaded file, splits it into overlapping "
-    "chunks, embeds each chunk and stores it in SQLite. Use `rag=true` on /chat "
+    "chunks, embeds each chunk and stores it. Use `rag=true` on /chat "
     "afterwards to retrieve from it.",
 )
 async def ingest_document(
@@ -21,7 +21,7 @@ async def ingest_document(
     rag_service: RagService = Depends(get_rag_service),
 ) -> IngestResponse:
     try:
-        filename, document_id, chunk_count = rag_service.ingest_file(file)
+        filename, document_id, chunk_count = await rag_service.ingest_file(file)
     except UnsupportedFileTypeError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except ValueError as exc:
@@ -38,7 +38,7 @@ async def ingest_document(
 async def list_documents(
     rag_service: RagService = Depends(get_rag_service),
 ) -> RagDocumentListResponse:
-    docs = rag_service.list_documents()
+    docs = await rag_service.list_documents()
     return RagDocumentListResponse(documents=[RagDocument(**doc) for doc in docs])
 
 
@@ -50,7 +50,7 @@ async def delete_document(
     document_id: int,
     rag_service: RagService = Depends(get_rag_service),
 ) -> dict:
-    deleted = rag_service.delete_document(document_id)
+    deleted = await rag_service.delete_document(document_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Document not found")
     return {"status": "deleted", "document_id": document_id}

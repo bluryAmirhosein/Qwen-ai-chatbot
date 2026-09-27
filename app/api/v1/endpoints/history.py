@@ -29,12 +29,12 @@ async def list_or_search_history(
     history_service: HistoryService = Depends(get_history_service),
 ):
     if q:
-        results = history_service.search(q, limit=limit)
+        results = await history_service.search(q, limit=limit)
         return ConversationSearchResponse(
             results=[ConversationSearchResult(**r) for r in results]
         )
 
-    conversations = history_service.list_conversations(limit=limit, offset=offset)
+    conversations = await history_service.list_conversations(limit=limit, offset=offset)
     return ConversationListResponse(
         conversations=[ConversationOut(**c) for c in conversations]
     )
@@ -51,7 +51,7 @@ async def get_conversation(
     conversation_id: int,
     history_service: HistoryService = Depends(get_history_service),
 ) -> ConversationDetailOut:
-    conversation = history_service.get_conversation(conversation_id)
+    conversation = await history_service.get_conversation(conversation_id)
     if conversation is None:
         raise HTTPException(status_code=404, detail="Conversation not found")
     return ConversationDetailOut(
@@ -67,7 +67,7 @@ async def delete_conversation(
     conversation_id: int,
     history_service: HistoryService = Depends(get_history_service),
 ) -> dict:
-    deleted = history_service.delete_conversation(conversation_id)
+    deleted = await history_service.delete_conversation(conversation_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Conversation not found")
     return {"status": "deleted", "conversation_id": conversation_id}
