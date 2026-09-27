@@ -48,7 +48,8 @@ services:
           create_host_path: false
       - app_data:/app/data   # rag.db + history.db
       - app_logs:/app/logs
-      - ./alembic/versions:/app/alembic/versions
+      - ./app:/app/app
+      - ./alembic:/app/alembic
     expose:
       - "8000"
     healthcheck:

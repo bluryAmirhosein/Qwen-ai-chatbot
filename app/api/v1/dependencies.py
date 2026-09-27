@@ -10,15 +10,16 @@ files that would otherwise need each other's service getters (e.g. both
 from functools import lru_cache
 
 from fastapi import Depends
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
+from app.core.database import get_db
 from app.services.chat_service import ChatService
 from app.services.file_service import FileService
 from app.services.history_service import HistoryService
 from app.services.model_service import ModelService
 from app.services.rag.embedding_service import EmbeddingService
 from app.services.rag.rag_service import RagService
-from app.services.rag.vector_store import SQLiteVectorStore
 from app.services.web_search import WebSearchService
 from app.services.summarizer_service import SummarizerService
 
@@ -56,27 +57,21 @@ def get_embedding_service() -> EmbeddingService:
     )
 
 
-@lru_cache
-def get_vector_store() -> SQLiteVectorStore:
-    settings = get_settings()
-    return SQLiteVectorStore(db_path=settings.rag_db_path)
-
-
-@lru_cache
-def get_history_service() -> HistoryService:
-    settings = get_settings()
-    return HistoryService(db_path=settings.history_db_path)
+def get_history_service(session: AsyncSession = Depends(get_db)) -> HistoryService:
+    """Request-scoped: HistoryService now owns an AsyncSession, so it can no
+    longer be an lru_cache singleton — each request gets its own session."""
+    return HistoryService(session=session)
 
 
 def get_rag_service(
+    session: AsyncSession = Depends(get_db),
     file_service: FileService = Depends(get_file_service),
     embedding_service: EmbeddingService = Depends(get_embedding_service),
-    vector_store: SQLiteVectorStore = Depends(get_vector_store),
 ) -> RagService:
     return RagService(
+        session=session,
         file_service=file_service,
         embedding_service=embedding_service,
-        vector_store=vector_store,
     )
 
 
@@ -94,6 +89,7 @@ def get_chat_service(
         rag_service=rag_service,
         history_service=history_service,
     )
+
 
 def get_summarizer_service(
     model_service: ModelService = Depends(get_model_service),

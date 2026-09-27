@@ -1,9 +1,12 @@
 import logging
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.repository.chunk_repository import ChunkRepository, SearchResult
+from app.repository.document_repository import DocumentRepository
 from app.services.file_service import FileService
 from app.services.rag.chunker import TextChunker
 from app.services.rag.embedding_service import EmbeddingService
-from app.services.rag.vector_store import SearchResult, SQLiteVectorStore
 
 logger = logging.getLogger(__name__)
 
@@ -19,17 +22,19 @@ class RagService:
 
     def __init__(
         self,
+        session: AsyncSession,
         file_service: FileService,
         embedding_service: EmbeddingService,
-        vector_store: SQLiteVectorStore,
         chunker: TextChunker | None = None,
     ):
+        self._session = session
+        self._documents = DocumentRepository(session)
+        self._chunks = ChunkRepository(session)
         self._file_service = file_service
         self._embedding_service = embedding_service
-        self._vector_store = vector_store
         self._chunker = chunker or TextChunker()
 
-    def ingest_file(self, file) -> tuple[str, int, int]:
+    async def ingest_file(self, file) -> tuple[str, int, int]:
         """Extract, chunk, embed and store an uploaded file.
 
         Returns (filename, document_id, chunk_count).
@@ -42,24 +47,30 @@ class RagService:
             raise ValueError("No extractable text found in the uploaded file")
 
         embeddings = self._embedding_service.embed_documents(chunks)
-        document_id, chunk_count = self._vector_store.add_document(filename, chunks, embeddings)
-        return filename, document_id, chunk_count
+        document = await self._documents.create(filename)
+        chunk_count = await self._chunks.add_many(document.id, chunks, embeddings)
+        await self._session.commit()
 
-    def retrieve(self, query: str, top_k: int = 4) -> list[SearchResult]:
+        logger.info("Stored document '%s' (id=%d) with %d chunks", filename, document.id, chunk_count)
+        return filename, document.id, chunk_count
+
+    async def retrieve(self, query: str, top_k: int = 4) -> list[SearchResult]:
         query_embedding = self._embedding_service.embed_query(query)
-        return self._vector_store.search(query_embedding, top_k=top_k)
+        return await self._chunks.search(query_embedding, top_k=top_k)
 
-    def retrieve_context(self, query: str, top_k: int = 4) -> str | None:
+    async def retrieve_context(self, query: str, top_k: int = 4) -> str | None:
         """Retrieve chunks and format them as a single context block for the prompt."""
-        results = self.retrieve(query, top_k=top_k)
+        results = await self.retrieve(query, top_k=top_k)
         if not results:
             return None
 
         blocks = [f"[Source: {r.filename}]\n{r.content}" for r in results]
         return "\n\n---\n\n".join(blocks)
 
-    def list_documents(self) -> list[dict]:
-        return self._vector_store.list_documents()
+    async def list_documents(self) -> list[dict]:
+        return await self._documents.list_with_chunk_counts()
 
-    def delete_document(self, document_id: int) -> bool:
-        return self._vector_store.delete_document(document_id)
+    async def delete_document(self, document_id: int) -> bool:
+        deleted = await self._documents.delete(document_id)
+        await self._session.commit()
+        return deleted

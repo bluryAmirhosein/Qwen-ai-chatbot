@@ -52,6 +52,11 @@ class ChatService:
     (message building, thinking mode, personality, web search / file /
     RAG context injection, history persistence) can be unit tested with a
     fake or mocked ModelService, without ever touching real model weights.
+
+    get_response is async because HistoryService and RagService are backed
+    by an AsyncSession; model_service.generate and search_service.search
+    stay sync/blocking calls (they don't touch the DB) and FastAPI runs
+    them in a worker thread as usual.
     """
 
     def __init__(
@@ -70,7 +75,7 @@ class ChatService:
         self._history_service = history_service
         self._system_prompt = system_prompt
 
-    def get_response(
+    async def get_response(
         self,
         user_message: str,
         thinking_mode: ThinkingMode = ThinkingMode.FAST,
@@ -100,10 +105,10 @@ class ChatService:
                 logger.warning("conversation_id was given but no HistoryService is configured; ignoring it")
                 conversation_id = None
             else:
-                conversation = self._history_service.get_conversation(conversation_id)
+                conversation = await self._history_service.get_conversation(conversation_id)
                 if conversation is None:
                     raise ConversationNotFoundError(f"Conversation {conversation_id} not found")
-                history = self._history_service.get_messages_for_prompt(conversation_id)
+                history = await self._history_service.get_messages_for_prompt(conversation_id)
 
         enable_thinking, tokens_multiplier, extra_instruction = _THINKING_MODE_CONFIG[thinking_mode]
 
@@ -122,7 +127,7 @@ class ChatService:
             if self._rag_service is None:
                 logger.warning("rag=True was requested but no RagService is configured; skipping retrieval")
             else:
-                rag_context = self._rag_service.retrieve_context(user_message, top_k=rag_top_k)
+                rag_context = await self._rag_service.retrieve_context(user_message, top_k=rag_top_k)
                 if rag_context:
                     extra_context_parts.append(rag_context)
 
@@ -144,9 +149,9 @@ class ChatService:
 
         if self._history_service is not None:
             if conversation_id is None:
-                conversation_id = self._history_service.create_conversation(title=user_message)
-            self._history_service.add_message(conversation_id, "user", user_message)
-            self._history_service.add_message(conversation_id, "assistant", response)
+                conversation_id = await self._history_service.create_conversation(title=user_message)
+            await self._history_service.add_message(conversation_id, "user", user_message)
+            await self._history_service.add_message(conversation_id, "assistant", response)
 
         return ChatResult(response=response, conversation_id=conversation_id)
 

@@ -78,7 +78,7 @@ async def send_message(
         conversation_id,
     )
     try:
-        result = chat_service.get_response(
+        result = await chat_service.get_response(
             user_message=message,
             thinking_mode=thinking_mode,
             web_search=web_search,

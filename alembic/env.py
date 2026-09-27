@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 from alembic import context
 from app.config import get_settings
 from app.core.database import Base
+from app.models import Conversation, Message, Chunk, Document
 
 # Import every model module here so its table registers on Base.metadata
 # before autogenerate compares against the database, e.g.:
