@@ -6,18 +6,22 @@ from app.repository.chunk_repository import ChunkRepository, SearchResult
 from app.repository.document_repository import DocumentRepository
 from app.services.file_service import FileService
 from app.services.rag.chunker import TextChunker
+from app.services.rag.csv_chunker import CsvChunker
 from app.services.rag.embedding_service import EmbeddingService
 
 logger = logging.getLogger(__name__)
 
 
 class RagService:
-    """Ingests Word documents and retrieves relevant chunks for a query.
+    """Ingests documents (text-based and CSV) and retrieves relevant chunks
+    for a query.
 
-    Sits alongside ChatService/ModelService as its own layer: ingestion
-    (extract -> chunk -> embed -> store) and retrieval (embed query ->
-    search -> format context) both happen here, so the API layer and
-    ChatService stay unaware of chunking/embedding/storage details.
+    Ingestion branches on file type: plain-text-derived documents (.txt/
+    .md/.pdf/.docx) go through TextChunker's paragraph-packing logic, while
+    .csv files go through CsvChunker, which treats each row as its own
+    chunk instead of trying to paragraph-split tabular data. FileService
+    still does the actual byte->text extraction for both cases; only the
+    chunking strategy differs.
     """
 
     def __init__(
@@ -26,6 +30,7 @@ class RagService:
         file_service: FileService,
         embedding_service: EmbeddingService,
         chunker: TextChunker | None = None,
+        csv_chunker: CsvChunker | None = None,
     ):
         self._session = session
         self._documents = DocumentRepository(session)
@@ -33,6 +38,7 @@ class RagService:
         self._file_service = file_service
         self._embedding_service = embedding_service
         self._chunker = chunker or TextChunker()
+        self._csv_chunker = csv_chunker or CsvChunker()
 
     async def ingest_file(self, file) -> tuple[str, int, int]:
         """Extract, chunk, embed and store an uploaded file.
@@ -41,7 +47,11 @@ class RagService:
         """
         filename = file.filename or "unknown"
         text = self._file_service.extract_text(file)
-        chunks = self._chunker.split(text)
+
+        if self._file_service.is_csv(filename):
+            chunks = self._csv_chunker.split(text)
+        else:
+            chunks = self._chunker.split(text)
 
         if not chunks:
             raise ValueError("No extractable text found in the uploaded file")
