@@ -28,6 +28,8 @@ services:
       FORWARDED_ALLOW_IPS: "*"
       # HF cache layout lives directly in ai-models/ (models--Qwen--Qwen3-1.7B, models--intfloat--...).
       MODEL_CACHE_DIR: ${CONTAINER_MODEL_CACHE_DIR:-/app/ai-models}
+      # Path of the GGUF file as seen from INSIDE the container (used when MODEL_BACKEND=llama_cpp).
+      GGUF_MODEL_PATH: ${CONTAINER_GGUF_MODEL_PATH:-/app/ai-models/qwen3-4b-gguf/Qwen3-4B-Q4_K_M.gguf}
       RAG_DB_PATH: /app/data/rag.db
       HISTORY_DB_PATH: /app/data/history.db
       LOG_FILE: /app/logs/app.log
