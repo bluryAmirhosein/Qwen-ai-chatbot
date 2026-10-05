@@ -1,65 +1,46 @@
 import logging
 import threading
-
-import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
+import time
 
 from app.config import Settings
+from app.services.model_backends import LLMBackend, create_backend
 
 logger = logging.getLogger(__name__)
 
 
 class ModelService:
-    """Wraps loading and running the language model.
+    """Facade over the configured inference backend.
 
     Kept as its own layer (separate from ChatService) so that:
       - Model loading/inference details never leak into business logic.
       - It can be swapped for a fake/mock implementation in unit tests
         without ever loading real model weights.
+
+    The actual inference engine (transformers or llama.cpp) is selected by
+    settings.model_backend; this class only adds locking, token budgeting
+    and throughput logging on top of it.
     """
 
-    def __init__(self, settings: Settings):
+    def __init__(self, settings: Settings, backend: LLMBackend | None = None):
         self._settings = settings
-        self._tokenizer = None
-        self._model = None
-        self._device: str | None = None
-        self._lock = threading.Lock()
+        self._backend = backend or create_backend(settings)
+        # Reentrant because generate() may call load() while already holding the lock.
+        self._lock = threading.RLock()
 
     @property
     def is_loaded(self) -> bool:
-        return self._model is not None
+        return self._backend.is_loaded
 
     def load(self) -> None:
-        """Download (if needed) and load the tokenizer/model into memory."""
-        if self.is_loaded:
-            return
-
-        logger.info(
-            "Loading model '%s' (cache_dir=%s)",
-            self._settings.model_name,
-            self._settings.model_cache_dir,
-        )
-
-        device = self._resolve_device()
-
-        self._tokenizer = AutoTokenizer.from_pretrained(
-            self._settings.model_name,
-            cache_dir=self._settings.model_cache_dir,
-        )
-        self._model = AutoModelForCausalLM.from_pretrained(
-            self._settings.model_name,
-            cache_dir=self._settings.model_cache_dir,
-            torch_dtype="auto",
-        ).to(device)
-        self._device = device
-
-        logger.info("Model loaded successfully on device '%s'", device)
+        """Download/open (if needed) and load the model into memory."""
+        with self._lock:
+            if self.is_loaded:
+                return
+            self._backend.load()
 
     def unload(self) -> None:
-        self._model = None
-        self._tokenizer = None
-        self._device = None
-        logger.info("Model unloaded")
+        with self._lock:
+            self._backend.unload()
 
     def generate(
         self,
@@ -72,39 +53,34 @@ class ModelService:
         messages follows the standard chat format:
             [{"role": "system"/"user"/"assistant", "content": "..."}, ...]
 
-        enable_thinking controls whether the chat template enables the
-        model's extended thinking / reasoning mode. max_new_tokens_multiplier
-        scales the configured max_new_tokens, used to approximate different
+        enable_thinking controls whether the model's extended thinking /
+        reasoning mode is enabled. max_new_tokens_multiplier scales the
+        configured max_new_tokens, used to approximate different
         "thinking depth" tiers (fast / balanced / deep).
         """
-        if not self.is_loaded:
-            self.load()
-
         max_new_tokens = max(1, int(self._settings.max_new_tokens * max_new_tokens_multiplier))
 
         with self._lock:
-            prompt_text = self._tokenizer.apply_chat_template(
+            if not self.is_loaded:
+                self.load()
+
+            started_at = time.perf_counter()
+            result = self._backend.generate(
                 messages,
-                tokenize=False,
-                add_generation_prompt=True,
                 enable_thinking=enable_thinking,
-            )
-            inputs = self._tokenizer([prompt_text], return_tensors="pt").to(self._device)
-
-            output_ids = self._model.generate(
-                **inputs,
                 max_new_tokens=max_new_tokens,
-                temperature=self._settings.temperature,
             )
+            elapsed = time.perf_counter() - started_at
 
-            generated_ids = output_ids[0][inputs["input_ids"].shape[1]:]
-            response = self._tokenizer.decode(generated_ids, skip_special_tokens=True)
+        tokens_per_second = result.completion_tokens / elapsed if elapsed > 0 else 0.0
+        logger.info(
+            "Generation finished (backend=%s, tokens=%d, seconds=%.2f, tokens_per_second=%.2f)",
+            self._settings.model_backend,
+            result.completion_tokens,
+            elapsed,
+            tokens_per_second,
+        )
 
-        response = response.strip()
+        response = result.text.strip()
         logger.debug("Generated response of length %d", len(response))
         return response
-
-    def _resolve_device(self) -> str:
-        if self._settings.device != "auto":
-            return self._settings.device
-        return "cuda" if torch.cuda.is_available() else "cpu"
