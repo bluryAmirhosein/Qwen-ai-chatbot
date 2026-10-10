@@ -46,6 +46,7 @@ export const api = {
   /**
    * POST /chat — note the backend expects the message as a raw
    * text/plain body, not JSON; every other option is a query param.
+   * Pass `request_id` in params to make the generation cancellable.
    */
   async sendMessage(message, params, { signal } = {}) {
     const qs = buildQuery(params);
@@ -54,6 +55,13 @@ export const api = {
       headers: { "Content-Type": "text/plain" },
       body: message,
       signal,
+    });
+  },
+
+  /** POST /chat/stop — asks the backend to stop the generation for this request id. */
+  async stopGeneration(requestId) {
+    return request(`/chat/stop?${buildQuery({ request_id: requestId })}`, {
+      method: "POST",
     });
   },
 

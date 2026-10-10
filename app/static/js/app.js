@@ -12,6 +12,11 @@ const state = {
   sending: false,
   summarizing: false,
 
+  // Stop generation
+  activeRequestId: null,
+  abortController: null,
+  stopRequested: false,
+
   // RAG document selection
   ragDocs: [], // last fetched document list: [{ id, filename, chunk_count }]
   ragDocumentIds: [], // confirmed selection, sent as document_ids
@@ -88,6 +93,10 @@ const el = {
 
 let lastSummary = "";
 
+// The send button doubles as the stop button while a reply is being generated.
+const SEND_ICON_HTML = el.sendBtn.innerHTML;
+const STOP_ICON_HTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="5" y="5" width="14" height="14" rx="2"/></svg>`;
+
 // --- helpers ---
 
 function escapeHtml(str) {
@@ -111,6 +120,24 @@ function renderMarkdownLite(text) {
 function autoResizeInput() {
   el.input.style.height = "auto";
   el.input.style.height = Math.min(el.input.scrollHeight, 160) + "px";
+}
+
+/**
+ * Unique id for one chat request. crypto.randomUUID() only exists in secure
+ * contexts (HTTPS / localhost), so when the UI is opened over plain HTTP via
+ * a server IP it is undefined; crypto.getRandomValues works everywhere.
+ */
+function generateRequestId() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  const bytes = new Uint8Array(16);
+  if (typeof crypto !== "undefined" && typeof crypto.getRandomValues === "function") {
+    crypto.getRandomValues(bytes);
+  } else {
+    for (let i = 0; i < bytes.length; i += 1) bytes[i] = Math.floor(Math.random() * 256);
+  }
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
 }
 
 // --- messages ---
@@ -394,7 +421,38 @@ function handleRagToggleChange() {
   }
 }
 
-// --- sending a message ---
+// --- sending a message / stopping generation ---
+
+/** Switches the send button between its "send" and "stop" appearance. */
+function setSendButtonMode(mode) {
+  const isStop = mode === "stop";
+  el.sendBtn.innerHTML = isStop ? STOP_ICON_HTML : SEND_ICON_HTML;
+  el.sendBtn.title = isStop ? "توقف پاسخ" : "ارسال";
+  el.sendBtn.setAttribute("aria-label", isStop ? "توقف پاسخ" : "ارسال");
+}
+
+/**
+ * Stops the reply that is currently being generated. The backend is told to
+ * stop the model (otherwise it keeps burning CPU until the answer is done),
+ * and the HTTP request is aborted so the UI is released immediately.
+ */
+function stopGeneration() {
+  if (!state.sending || !state.activeRequestId || state.stopRequested) return;
+
+  state.stopRequested = true;
+  api.stopGeneration(state.activeRequestId).catch((err) => {
+    console.error("Failed to send stop request:", err);
+  });
+  if (state.abortController) state.abortController.abort();
+}
+
+function handleSendButtonClick() {
+  if (state.sending) {
+    stopGeneration();
+  } else {
+    sendMessage();
+  }
+}
 
 async function sendMessage() {
   const text = el.input.value.trim();
@@ -407,7 +465,11 @@ async function sendMessage() {
   }
 
   state.sending = true;
-  el.sendBtn.disabled = true;
+  state.stopRequested = false;
+  state.activeRequestId = generateRequestId();
+  state.abortController = new AbortController();
+  setSendButtonMode("stop");
+
   el.input.value = "";
   autoResizeInput();
 
@@ -425,10 +487,11 @@ async function sendMessage() {
     document_ids: ragOn ? state.ragDocumentIds : undefined,
     context: state.contextText || undefined,
     conversation_id: state.conversationId || undefined,
+    request_id: state.activeRequestId,
   };
 
   try {
-    const result = await api.sendMessage(text, params);
+    const result = await api.sendMessage(text, params, { signal: state.abortController.signal });
 
     pendingBubble.innerHTML = renderMarkdownLite(result.response);
     delete pendingBubble.dataset.pending;
@@ -443,11 +506,18 @@ async function sendMessage() {
       renderConversationList(state.conversations, { activeId: state.conversationId });
     }
   } catch (err) {
-    pendingBubble.innerHTML = `<span class="text-danger">خطا: ${escapeHtml(err.message)}</span>`;
+    if (state.stopRequested || err.name === "AbortError") {
+      pendingBubble.innerHTML = `<span class="text-dim">پاسخ متوقف شد</span>`;
+    } else {
+      pendingBubble.innerHTML = `<span class="text-danger">خطا: ${escapeHtml(err.message)}</span>`;
+    }
     delete pendingBubble.dataset.pending;
   } finally {
     state.sending = false;
-    el.sendBtn.disabled = false;
+    state.stopRequested = false;
+    state.activeRequestId = null;
+    state.abortController = null;
+    setSendButtonMode("send");
   }
 }
 
@@ -647,7 +717,7 @@ function closeMobileSidebar() {
 el.newChatBtn.addEventListener("click", startNewChat);
 el.deleteConvBtn.addEventListener("click", deleteCurrentConversation);
 
-el.sendBtn.addEventListener("click", sendMessage);
+el.sendBtn.addEventListener("click", handleSendButtonClick);
 el.input.addEventListener("input", autoResizeInput);
 el.input.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey) {
