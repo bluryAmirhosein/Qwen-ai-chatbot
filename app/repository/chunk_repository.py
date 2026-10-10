@@ -26,6 +26,9 @@ class ChunkRepository:
     corpus grows much larger, swap this for pgvector (vector column + an
     ivfflat/hnsw index) without touching RagService, since this repository
     is the only place that talks to chunk storage.
+
+    Search can optionally be restricted to a set of document ids, in which
+    case only those documents' chunks are loaded and ranked.
     """
 
     def __init__(self, session: AsyncSession):
@@ -48,10 +51,19 @@ class ChunkRepository:
         await self._session.flush()
         return len(chunks)
 
-    async def search(self, query_embedding: np.ndarray, top_k: int = 4) -> list[SearchResult]:
+    async def search(
+        self,
+        query_embedding: np.ndarray,
+        top_k: int = 4,
+        document_ids: list[int] | None = None,
+    ) -> list[SearchResult]:
         stmt = select(
             Chunk.id, Chunk.document_id, Document.filename, Chunk.content, Chunk.embedding
         ).join(Document, Document.id == Chunk.document_id)
+
+        if document_ids:
+            stmt = stmt.where(Chunk.document_id.in_(document_ids))
+
         result = await self._session.execute(stmt)
         rows = result.all()
 

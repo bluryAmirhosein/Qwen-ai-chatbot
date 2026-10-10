@@ -10,7 +10,7 @@ from app.schemas.chat import (
 from app.services.file_service import FileService
 from app.services.history_service import HistoryService
 from app.services.model_service import ModelService
-from app.services.rag.rag_service import RagService
+from app.services.rag.rag_service import DocumentNotFoundError, RagService  # noqa: F401
 from app.services.web_search import WebSearchService
 
 logger = logging.getLogger(__name__)
@@ -57,6 +57,9 @@ class ChatService:
     by an AsyncSession; model_service.generate and search_service.search
     stay sync/blocking calls (they don't touch the DB) and FastAPI runs
     them in a worker thread as usual.
+
+    When rag=True, retrieval can be restricted to specific documents via
+    `document_ids`. If omitted or empty, all ingested documents are searched.
     """
 
     def __init__(
@@ -82,6 +85,7 @@ class ChatService:
         web_search: bool = False,
         rag: bool = False,
         rag_top_k: int = 4,
+        document_ids: list[int] | None = None,
         personality: Personality = Personality.NEUTRAL,
         language: Language = Language.ENGLISH,
         context: str | None = None,
@@ -89,11 +93,12 @@ class ChatService:
     ) -> ChatResult:
         logger.info(
             "Processing user message (length=%d, thinking_mode=%s, web_search=%s, "
-            "rag=%s, personality=%s, language=%s, conversation_id=%s)",
+            "rag=%s, document_ids=%s, personality=%s, language=%s, conversation_id=%s)",
             len(user_message),
             thinking_mode.value,
             web_search,
             rag,
+            document_ids,
             personality.value,
             language.value,
             conversation_id,
@@ -127,7 +132,11 @@ class ChatService:
             if self._rag_service is None:
                 logger.warning("rag=True was requested but no RagService is configured; skipping retrieval")
             else:
-                rag_context = await self._rag_service.retrieve_context(user_message, top_k=rag_top_k)
+                rag_context = await self._rag_service.retrieve_context(
+                    user_message,
+                    top_k=rag_top_k,
+                    document_ids=document_ids,
+                )
                 if rag_context:
                     extra_context_parts.append(rag_context)
 

@@ -12,6 +12,14 @@ from app.services.rag.embedding_service import EmbeddingService
 logger = logging.getLogger(__name__)
 
 
+class DocumentNotFoundError(Exception):
+    """Raised when one or more requested document ids don't exist."""
+
+    def __init__(self, missing_ids: list[int]):
+        self.missing_ids = missing_ids
+        super().__init__(f"Document(s) not found: {', '.join(str(i) for i in missing_ids)}")
+
+
 class RagService:
     """Ingests documents (text-based and CSV) and retrieves relevant chunks
     for a query.
@@ -22,6 +30,9 @@ class RagService:
     chunk instead of trying to paragraph-split tabular data. FileService
     still does the actual byte->text extraction for both cases; only the
     chunking strategy differs.
+
+    Retrieval can be scoped to specific documents via `document_ids`. When
+    omitted (or empty), all ingested documents are searched.
     """
 
     def __init__(
@@ -64,13 +75,32 @@ class RagService:
         logger.info("Stored document '%s' (id=%d) with %d chunks", filename, document.id, chunk_count)
         return filename, document.id, chunk_count
 
-    async def retrieve(self, query: str, top_k: int = 4) -> list[SearchResult]:
-        query_embedding = self._embedding_service.embed_query(query)
-        return await self._chunks.search(query_embedding, top_k=top_k)
+    async def _validate_document_ids(self, document_ids: list[int]) -> None:
+        existing = {doc["id"] for doc in await self._documents.list_with_chunk_counts()}
+        missing = sorted(set(document_ids) - existing)
+        if missing:
+            raise DocumentNotFoundError(missing)
 
-    async def retrieve_context(self, query: str, top_k: int = 4) -> str | None:
+    async def retrieve(
+        self,
+        query: str,
+        top_k: int = 4,
+        document_ids: list[int] | None = None,
+    ) -> list[SearchResult]:
+        if document_ids:
+            await self._validate_document_ids(document_ids)
+
+        query_embedding = self._embedding_service.embed_query(query)
+        return await self._chunks.search(query_embedding, top_k=top_k, document_ids=document_ids)
+
+    async def retrieve_context(
+        self,
+        query: str,
+        top_k: int = 4,
+        document_ids: list[int] | None = None,
+    ) -> str | None:
         """Retrieve chunks and format them as a single context block for the prompt."""
-        results = await self.retrieve(query, top_k=top_k)
+        results = await self.retrieve(query, top_k=top_k, document_ids=document_ids)
         if not results:
             return None
 

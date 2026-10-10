@@ -5,6 +5,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from app.api.v1.dependencies import get_chat_service
 from app.schemas.chat import ChatResponse, Language, Personality, ThinkingMode
 from app.services.chat_service import ChatService, ConversationNotFoundError
+from app.services.rag.rag_service import DocumentNotFoundError
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -19,7 +20,8 @@ router = APIRouter()
     "body; every other option is a query parameter with a dropdown in Swagger. "
     "Pass `conversation_id` to continue an earlier conversation, or omit it to "
     "start a new one — the response always includes the conversation_id to use "
-    "on your next call.",
+    "on your next call. With `rag=true`, pass one or more `document_ids` (from "
+    "GET /rag/documents) to answer only from those documents.",
 )
 async def send_message(
     message: str = Body(
@@ -41,6 +43,11 @@ async def send_message(
         default=False,
         description="If true, retrieve relevant chunks from documents ingested via "
         "/rag/ingest and inject them as context",
+    ),
+    document_ids: list[int] | None = Query(
+        default=None,
+        description="Only used when rag=true. Restrict retrieval to these document ids "
+        "(see GET /rag/documents). Leave empty to search all ingested documents.",
     ),
     rag_top_k: int = Query(
         default=4,
@@ -67,12 +74,19 @@ async def send_message(
     ),
     chat_service: ChatService = Depends(get_chat_service),
 ) -> ChatResponse:
+    if document_ids and not rag:
+        raise HTTPException(
+            status_code=400,
+            detail="document_ids can only be used together with rag=true",
+        )
+
     logger.info(
-        "Received chat request (thinking_mode=%s, web_search=%s, rag=%s, personality=%s, "
-        "language=%s, conversation_id=%s)",
+        "Received chat request (thinking_mode=%s, web_search=%s, rag=%s, document_ids=%s, "
+        "personality=%s, language=%s, conversation_id=%s)",
         thinking_mode.value,
         web_search,
         rag,
+        document_ids,
         personality.value,
         language.value,
         conversation_id,
@@ -84,12 +98,15 @@ async def send_message(
             web_search=web_search,
             rag=rag,
             rag_top_k=rag_top_k,
+            document_ids=document_ids,
             personality=personality,
             language=language,
             context=context,
             conversation_id=conversation_id,
         )
     except ConversationNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except DocumentNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     return ChatResponse(response=result.response, conversation_id=result.conversation_id)
