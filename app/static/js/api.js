@@ -23,9 +23,18 @@ async function request(path, options = {}) {
   return res.json();
 }
 
+/**
+ * Builds a query string. Array values are sent as repeated keys
+ * (e.g. document_ids=3&document_ids=5), which is what FastAPI expects
+ * for list query parameters. Empty/undefined values are skipped.
+ */
 function buildQuery(params) {
   const qs = new URLSearchParams();
   Object.entries(params).forEach(([key, value]) => {
+    if (Array.isArray(value)) {
+      value.forEach((item) => qs.append(key, item));
+      return;
+    }
     if (value !== undefined && value !== null && value !== "") {
       qs.set(key, value);
     }

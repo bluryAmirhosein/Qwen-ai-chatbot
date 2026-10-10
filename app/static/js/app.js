@@ -11,6 +11,11 @@ const state = {
   contextFilename: null,
   sending: false,
   summarizing: false,
+
+  // RAG document selection
+  ragDocs: [], // last fetched document list: [{ id, filename, chunk_count }]
+  ragDocumentIds: [], // confirmed selection, sent as document_ids
+  ragDraft: new Set(), // in-progress selection while the picker is open
 };
 
 const el = {
@@ -39,6 +44,9 @@ const el = {
   language: document.getElementById("language"),
   webSearchToggle: document.getElementById("web-search-toggle"),
   ragToggle: document.getElementById("rag-toggle"),
+  ragSelectWrap: document.getElementById("rag-select-wrap"),
+  ragSelectBtn: document.getElementById("rag-select-btn"),
+  ragSelectLabel: document.getElementById("rag-select-label"),
   ragTopKWrap: document.getElementById("rag-top-k-wrap"),
   ragTopK: document.getElementById("rag-top-k"),
 
@@ -49,6 +57,14 @@ const el = {
   ragUploadInput: document.getElementById("rag-upload-input"),
   ragUploadStatus: document.getElementById("rag-upload-status"),
   drawerBackdrop: document.getElementById("drawer-backdrop"),
+
+  ragPickerBackdrop: document.getElementById("rag-picker-backdrop"),
+  ragPickerCloseBtn: document.getElementById("rag-picker-close-btn"),
+  ragPickerSelectAll: document.getElementById("rag-picker-select-all"),
+  ragPickerCount: document.getElementById("rag-picker-count"),
+  ragPickerList: document.getElementById("rag-picker-list"),
+  ragPickerCancelBtn: document.getElementById("rag-picker-cancel-btn"),
+  ragPickerConfirmBtn: document.getElementById("rag-picker-confirm-btn"),
 
   summarizerOpenBtn: document.getElementById("summarizer-open-btn"),
   summarizerShortcutBtn: document.getElementById("summarizer-shortcut-btn"),
@@ -236,11 +252,159 @@ async function handleFileAttach(e) {
   }
 }
 
+// --- RAG selection (toolbar controls + picker modal) ---
+
+/** Shows/hides the RAG-only controls (document button + top_k) to match the toggle. */
+function syncRagControls() {
+  const show = el.ragToggle.checked;
+  el.ragTopKWrap.classList.toggle("hidden", !show);
+  el.ragTopKWrap.classList.toggle("flex", show);
+  el.ragSelectWrap.classList.toggle("hidden", !show);
+  el.ragSelectWrap.classList.toggle("flex", show);
+}
+
+function updateRagSelectLabel() {
+  const count = state.ragDocumentIds.length;
+  let label = "انتخاب سند";
+
+  if (count === 1) {
+    const doc = state.ragDocs.find((d) => d.id === state.ragDocumentIds[0]);
+    label = doc ? doc.filename : "۱ سند";
+  } else if (count > 1) {
+    label = `${count} سند`;
+  }
+
+  el.ragSelectLabel.textContent = label;
+}
+
+/** Stores the latest document list and drops selected ids that no longer exist. */
+function pruneRagSelection(documents) {
+  state.ragDocs = documents;
+  const existing = new Set(documents.map((d) => d.id));
+  state.ragDocumentIds = state.ragDocumentIds.filter((id) => existing.has(id));
+  updateRagSelectLabel();
+}
+
+function isRagPickerOpen() {
+  return !el.ragPickerBackdrop.classList.contains("hidden");
+}
+
+function updateRagPickerFooter() {
+  const total = state.ragDocs.length;
+  const selected = state.ragDraft.size;
+
+  el.ragPickerCount.textContent = total ? `${selected} از ${total} انتخاب شده` : "";
+  el.ragPickerSelectAll.disabled = total === 0;
+  el.ragPickerSelectAll.checked = total > 0 && selected === total;
+  el.ragPickerSelectAll.indeterminate = selected > 0 && selected < total;
+  el.ragPickerConfirmBtn.disabled = selected === 0;
+}
+
+function renderRagPicker() {
+  const docs = state.ragDocs;
+  el.ragPickerList.innerHTML = "";
+
+  if (!docs.length) {
+    el.ragPickerList.innerHTML = `<p class="text-xs text-dim px-4 py-6 text-center">سندی بارگذاری نشده است. ابتدا از «مدیریت اسناد» یک سند اضافه کنید.</p>`;
+    updateRagPickerFooter();
+    return;
+  }
+
+  docs.forEach((doc) => {
+    const row = document.createElement("label");
+    row.className = "doc-pick-row";
+    row.innerHTML = `
+      <input type="checkbox" data-id="${doc.id}" ${state.ragDraft.has(doc.id) ? "checked" : ""} />
+      <div class="min-w-0 flex-1">
+        <p class="text-sm truncate">${escapeHtml(doc.filename)}</p>
+        <p class="text-xs text-dim font-mono" dir="ltr">${doc.chunk_count} chunks</p>
+      </div>
+    `;
+
+    row.querySelector("input").addEventListener("change", (e) => {
+      if (e.target.checked) {
+        state.ragDraft.add(doc.id);
+      } else {
+        state.ragDraft.delete(doc.id);
+      }
+      updateRagPickerFooter();
+    });
+
+    el.ragPickerList.appendChild(row);
+  });
+
+  updateRagPickerFooter();
+}
+
+async function openRagPicker() {
+  el.ragPickerBackdrop.classList.remove("hidden");
+  el.ragPickerBackdrop.classList.add("flex");
+  el.ragPickerList.innerHTML = `<p class="text-xs text-dim px-4 py-6 text-center">در حال بارگذاری...</p>`;
+  el.ragPickerConfirmBtn.disabled = true;
+  el.ragPickerSelectAll.disabled = true;
+  el.ragPickerCount.textContent = "";
+
+  try {
+    const { documents } = await api.listDocuments();
+    pruneRagSelection(documents);
+    state.ragDraft = new Set(state.ragDocumentIds);
+    renderRagPicker();
+  } catch (err) {
+    el.ragPickerList.innerHTML = `<p class="text-xs text-danger px-4 py-6">${escapeHtml(err.message)}</p>`;
+  }
+}
+
+function hideRagPicker() {
+  el.ragPickerBackdrop.classList.add("hidden");
+  el.ragPickerBackdrop.classList.remove("flex");
+}
+
+/** Closes the picker without saving. If nothing was ever selected, RAG is switched off again. */
+function cancelRagPicker() {
+  hideRagPicker();
+  if (state.ragDocumentIds.length === 0) {
+    el.ragToggle.checked = false;
+    syncRagControls();
+  }
+}
+
+function confirmRagPicker() {
+  if (state.ragDraft.size === 0) return;
+
+  // Keep the selection in the same order as the document list.
+  state.ragDocumentIds = state.ragDocs.filter((d) => state.ragDraft.has(d.id)).map((d) => d.id);
+  updateRagSelectLabel();
+  hideRagPicker();
+  el.input.focus();
+}
+
+function handleRagPickerSelectAll() {
+  if (el.ragPickerSelectAll.checked) {
+    state.ragDraft = new Set(state.ragDocs.map((d) => d.id));
+  } else {
+    state.ragDraft = new Set();
+  }
+  renderRagPicker();
+}
+
+function handleRagToggleChange() {
+  syncRagControls();
+  if (el.ragToggle.checked && state.ragDocumentIds.length === 0) {
+    openRagPicker();
+  }
+}
+
 // --- sending a message ---
 
 async function sendMessage() {
   const text = el.input.value.trim();
   if (!text || state.sending) return;
+
+  // RAG needs an explicit document selection; ask for it before sending.
+  if (el.ragToggle.checked && state.ragDocumentIds.length === 0) {
+    openRagPicker();
+    return;
+  }
 
   state.sending = true;
   el.sendBtn.disabled = true;
@@ -250,13 +414,15 @@ async function sendMessage() {
   appendMessage("user", text);
   const pendingBubble = appendMessage("assistant", "", { pending: true });
 
+  const ragOn = el.ragToggle.checked;
   const params = {
     thinking_mode: el.thinkingMode.value,
     personality: el.personality.value,
     language: el.language.value,
     web_search: el.webSearchToggle.checked,
-    rag: el.ragToggle.checked,
-    rag_top_k: el.ragToggle.checked ? el.ragTopK.value : undefined,
+    rag: ragOn,
+    rag_top_k: ragOn ? el.ragTopK.value : undefined,
+    document_ids: ragOn ? state.ragDocumentIds : undefined,
     context: state.contextText || undefined,
     conversation_id: state.conversationId || undefined,
   };
@@ -303,6 +469,7 @@ async function refreshDocuments() {
 
   try {
     const { documents } = await api.listDocuments();
+    pruneRagSelection(documents);
 
     if (!documents.length) {
       el.ragDocList.innerHTML = `<p class="text-xs text-dim px-3 py-4 text-center">سندی بارگذاری نشده است</p>`;
@@ -493,10 +660,18 @@ el.attachBtn.addEventListener("click", () => el.fileInput.click());
 el.fileInput.addEventListener("change", handleFileAttach);
 el.contextChipRemove.addEventListener("click", clearContext);
 
-el.ragToggle.addEventListener("change", () => {
-  const show = el.ragToggle.checked;
-  el.ragTopKWrap.classList.toggle("hidden", !show);
-  el.ragTopKWrap.classList.toggle("flex", show);
+el.ragToggle.addEventListener("change", handleRagToggleChange);
+el.ragSelectBtn.addEventListener("click", openRagPicker);
+
+el.ragPickerCloseBtn.addEventListener("click", cancelRagPicker);
+el.ragPickerCancelBtn.addEventListener("click", cancelRagPicker);
+el.ragPickerConfirmBtn.addEventListener("click", confirmRagPicker);
+el.ragPickerSelectAll.addEventListener("change", handleRagPickerSelectAll);
+el.ragPickerBackdrop.addEventListener("click", (e) => {
+  if (e.target === el.ragPickerBackdrop) cancelRagPicker();
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && isRagPickerOpen()) cancelRagPicker();
 });
 
 let searchDebounce;

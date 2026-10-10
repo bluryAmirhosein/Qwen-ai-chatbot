@@ -136,6 +136,18 @@
           <span>RAG</span>
         </label>
 
+        <!-- Shows the current document selection; click to reopen the picker -->
+        <div id="rag-select-wrap" class="hidden items-center">
+          <button
+            id="rag-select-btn"
+            type="button"
+            title="انتخاب سندهای RAG"
+            class="param-toggle"
+          >
+            <span id="rag-select-label" class="truncate max-w-[160px]">انتخاب سند</span>
+          </button>
+        </div>
+
         <div id="rag-top-k-wrap" class="hidden items-center gap-1.5" dir="ltr">
           <span class="text-dim font-mono">top_k</span>
           <input
@@ -179,6 +191,43 @@
     </div>
     <div id="rag-doc-list" class="flex-1 overflow-y-auto"></div>
   </aside>
+
+  <!-- RAG document picker modal -->
+  <div id="rag-picker-backdrop" class="hidden fixed inset-0 bg-black/50 z-40 flex items-center justify-center p-4">
+    <div id="rag-picker-modal" class="w-full max-w-md max-h-[85vh] bg-panel border border-border rounded-lg flex flex-col overflow-hidden">
+      <div class="h-14 flex items-center justify-between px-4 border-b border-border shrink-0">
+        <h2 class="text-sm font-medium">انتخاب سند برای پاسخ‌گویی</h2>
+        <button id="rag-picker-close-btn" class="text-dim hover:text-ink text-lg leading-none">×</button>
+      </div>
+
+      <div class="flex items-center justify-between gap-3 px-4 py-2.5 border-b border-border shrink-0">
+        <label class="flex items-center gap-2 text-sm cursor-pointer select-none">
+          <input id="rag-picker-select-all" type="checkbox" class="accent-accent" style="accent-color: #c98a3e" />
+          <span>انتخاب همه</span>
+        </label>
+        <span id="rag-picker-count" class="text-xs text-dim"></span>
+      </div>
+
+      <div id="rag-picker-list" class="flex-1 overflow-y-auto"></div>
+
+      <div class="flex items-center gap-2 p-3 border-t border-border shrink-0">
+        <button
+          id="rag-picker-cancel-btn"
+          type="button"
+          class="flex-1 rounded-md border border-border text-sm py-2.5 text-dim hover:text-ink hover:bg-elevated transition-colors"
+        >
+          انصراف
+        </button>
+        <button
+          id="rag-picker-confirm-btn"
+          type="button"
+          class="flex-1 bg-accent text-bg rounded-md py-2.5 text-sm font-medium hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed transition-opacity"
+        >
+          تایید
+        </button>
+      </div>
+    </div>
+  </div>
 
   <!-- Summarizer modal -->
   <div id="summarizer-backdrop" class="hidden fixed inset-0 bg-black/50 z-40 flex items-center justify-center p-4">

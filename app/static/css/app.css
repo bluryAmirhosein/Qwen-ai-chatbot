@@ -144,6 +144,28 @@
   }
 }
 
+/* --- RAG document picker rows --- */
+
+.doc-pick-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px;
+  border-bottom: 1px solid #2a3138;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.doc-pick-row:hover {
+  background: #1b2126;
+}
+.doc-pick-row:has(input:checked) {
+  background: rgba(201, 138, 62, 0.12);
+}
+.doc-pick-row input {
+  accent-color: #c98a3e;
+  flex-shrink: 0;
+}
+
 /* respect reduced-motion preferences */
 @media (prefers-reduced-motion: reduce) {
   * {
