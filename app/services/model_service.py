@@ -3,6 +3,7 @@ import threading
 import time
 
 from app.config import Settings
+from app.services.cancellation import GenerationCancelledError
 from app.services.model_backends import LLMBackend, create_backend
 
 logger = logging.getLogger(__name__)
@@ -17,8 +18,8 @@ class ModelService:
         without ever loading real model weights.
 
     The actual inference engine (transformers or llama.cpp) is selected by
-    settings.model_backend; this class only adds locking, token budgeting
-    and throughput logging on top of it.
+    settings.model_backend; this class only adds locking, token budgeting,
+    cancellation checks and throughput logging on top of it.
     """
 
     def __init__(self, settings: Settings, backend: LLMBackend | None = None):
@@ -47,6 +48,7 @@ class ModelService:
         messages: list[dict],
         enable_thinking: bool = False,
         max_new_tokens_multiplier: float = 1.0,
+        cancel_event: threading.Event | None = None,
     ) -> str:
         """Generate a reply for a list of chat messages.
 
@@ -57,10 +59,18 @@ class ModelService:
         reasoning mode is enabled. max_new_tokens_multiplier scales the
         configured max_new_tokens, used to approximate different
         "thinking depth" tiers (fast / balanced / deep).
+
+        cancel_event, when set (from another thread), aborts the generation
+        and makes this method raise GenerationCancelledError. It is also
+        checked after the model lock is acquired, so a request that was
+        cancelled while queued behind another generation never starts.
         """
         max_new_tokens = max(1, int(self._settings.max_new_tokens * max_new_tokens_multiplier))
 
         with self._lock:
+            if cancel_event is not None and cancel_event.is_set():
+                raise GenerationCancelledError("Generation cancelled before it started")
+
             if not self.is_loaded:
                 self.load()
 
@@ -69,6 +79,7 @@ class ModelService:
                 messages,
                 enable_thinking=enable_thinking,
                 max_new_tokens=max_new_tokens,
+                cancel_event=cancel_event,
             )
             elapsed = time.perf_counter() - started_at
 

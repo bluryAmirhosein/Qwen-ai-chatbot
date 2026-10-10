@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from dataclasses import dataclass
 
@@ -7,10 +8,11 @@ from app.schemas.chat import (
     Personality,
     ThinkingMode,
 )
+from app.services.cancellation import CancellationRegistry, GenerationCancelledError
 from app.services.file_service import FileService
 from app.services.history_service import HistoryService
 from app.services.model_service import ModelService
-from app.services.rag.rag_service import DocumentNotFoundError, RagService  # noqa: F401
+from app.services.rag.rag_service import RagService
 from app.services.web_search import WebSearchService
 
 logger = logging.getLogger(__name__)
@@ -54,12 +56,17 @@ class ChatService:
     fake or mocked ModelService, without ever touching real model weights.
 
     get_response is async because HistoryService and RagService are backed
-    by an AsyncSession; model_service.generate and search_service.search
-    stay sync/blocking calls (they don't touch the DB) and FastAPI runs
-    them in a worker thread as usual.
+    by an AsyncSession. model_service.generate is a long, blocking call, so
+    it is run in a worker thread (asyncio.to_thread); otherwise it would
+    block the event loop and requests such as /chat/stop could not be served
+    while the model is generating.
 
     When rag=True, retrieval can be restricted to specific documents via
     `document_ids`. If omitted or empty, all ingested documents are searched.
+
+    If a request_id is supplied, the generation can be cancelled through the
+    CancellationRegistry. A cancelled request raises GenerationCancelledError
+    and nothing is saved to history.
     """
 
     def __init__(
@@ -69,6 +76,7 @@ class ChatService:
         file_service: FileService | None = None,
         rag_service: RagService | None = None,
         history_service: HistoryService | None = None,
+        cancellation_registry: CancellationRegistry | None = None,
         system_prompt: str = DEFAULT_SYSTEM_PROMPT,
     ):
         self._model_service = model_service
@@ -76,6 +84,7 @@ class ChatService:
         self._file_service = file_service or FileService()
         self._rag_service = rag_service
         self._history_service = history_service
+        self._cancellations = cancellation_registry
         self._system_prompt = system_prompt
 
     async def get_response(
@@ -90,10 +99,12 @@ class ChatService:
         language: Language = Language.ENGLISH,
         context: str | None = None,
         conversation_id: int | None = None,
+        request_id: str | None = None,
     ) -> ChatResult:
         logger.info(
             "Processing user message (length=%d, thinking_mode=%s, web_search=%s, "
-            "rag=%s, document_ids=%s, personality=%s, language=%s, conversation_id=%s)",
+            "rag=%s, document_ids=%s, personality=%s, language=%s, conversation_id=%s, "
+            "request_id=%s)",
             len(user_message),
             thinking_mode.value,
             web_search,
@@ -102,67 +113,83 @@ class ChatService:
             personality.value,
             language.value,
             conversation_id,
+            request_id,
         )
 
-        history: list[dict] = []
-        if conversation_id is not None:
-            if self._history_service is None:
-                logger.warning("conversation_id was given but no HistoryService is configured; ignoring it")
-                conversation_id = None
-            else:
-                conversation = await self._history_service.get_conversation(conversation_id)
-                if conversation is None:
-                    raise ConversationNotFoundError(f"Conversation {conversation_id} not found")
-                history = await self._history_service.get_messages_for_prompt(conversation_id)
+        cancel_event = None
+        if request_id and self._cancellations is not None:
+            cancel_event = self._cancellations.register(request_id)
 
-        enable_thinking, tokens_multiplier, extra_instruction = _THINKING_MODE_CONFIG[thinking_mode]
+        try:
+            history: list[dict] = []
+            if conversation_id is not None:
+                if self._history_service is None:
+                    logger.warning("conversation_id was given but no HistoryService is configured; ignoring it")
+                    conversation_id = None
+                else:
+                    conversation = await self._history_service.get_conversation(conversation_id)
+                    if conversation is None:
+                        raise ConversationNotFoundError(f"Conversation {conversation_id} not found")
+                    history = await self._history_service.get_messages_for_prompt(conversation_id)
 
-        extra_context_parts = []
+            enable_thinking, tokens_multiplier, extra_instruction = _THINKING_MODE_CONFIG[thinking_mode]
 
-        if context:
-            extra_context_parts.append(context)
+            extra_context_parts = []
 
-        if web_search:
-            results = self._search_service.search(user_message)
-            formatted = self._search_service.format_for_prompt(results)
-            if formatted:
-                extra_context_parts.append(formatted)
+            if context:
+                extra_context_parts.append(context)
 
-        if rag:
-            if self._rag_service is None:
-                logger.warning("rag=True was requested but no RagService is configured; skipping retrieval")
-            else:
-                rag_context = await self._rag_service.retrieve_context(
-                    user_message,
-                    top_k=rag_top_k,
-                    document_ids=document_ids,
+            if web_search:
+                results = self._search_service.search(user_message)
+                formatted = self._search_service.format_for_prompt(results)
+                if formatted:
+                    extra_context_parts.append(formatted)
+
+            if rag:
+                if self._rag_service is None:
+                    logger.warning("rag=True was requested but no RagService is configured; skipping retrieval")
+                else:
+                    rag_context = await self._rag_service.retrieve_context(
+                        user_message,
+                        top_k=rag_top_k,
+                        document_ids=document_ids,
+                    )
+                    if rag_context:
+                        extra_context_parts.append(rag_context)
+
+            messages = self._build_messages(
+                user_message=user_message,
+                history=history,
+                personality=personality,
+                language=language,
+                context="\n\n".join(extra_context_parts) or None,
+                extra_instruction=extra_instruction,
+            )
+
+            try:
+                response = await asyncio.to_thread(
+                    self._model_service.generate,
+                    messages,
+                    enable_thinking=enable_thinking,
+                    max_new_tokens_multiplier=tokens_multiplier,
+                    cancel_event=cancel_event,
                 )
-                if rag_context:
-                    extra_context_parts.append(rag_context)
+            except GenerationCancelledError:
+                logger.info("Generation cancelled by user (request_id=%s)", request_id)
+                raise
 
-        messages = self._build_messages(
-            user_message=user_message,
-            history=history,
-            personality=personality,
-            language=language,
-            context="\n\n".join(extra_context_parts) or None,
-            extra_instruction=extra_instruction,
-        )
-        response = self._model_service.generate(
-            messages,
-            enable_thinking=enable_thinking,
-            max_new_tokens_multiplier=tokens_multiplier,
-        )
+            logger.info("Generated response (length=%d)", len(response))
 
-        logger.info("Generated response (length=%d)", len(response))
+            if self._history_service is not None:
+                if conversation_id is None:
+                    conversation_id = await self._history_service.create_conversation(title=user_message)
+                await self._history_service.add_message(conversation_id, "user", user_message)
+                await self._history_service.add_message(conversation_id, "assistant", response)
 
-        if self._history_service is not None:
-            if conversation_id is None:
-                conversation_id = await self._history_service.create_conversation(title=user_message)
-            await self._history_service.add_message(conversation_id, "user", user_message)
-            await self._history_service.add_message(conversation_id, "assistant", response)
-
-        return ChatResult(response=response, conversation_id=conversation_id)
+            return ChatResult(response=response, conversation_id=conversation_id)
+        finally:
+            if cancel_event is not None:
+                self._cancellations.release(request_id)
 
     def extract_file_text(self, file) -> str:
         return self._file_service.extract_text(file)

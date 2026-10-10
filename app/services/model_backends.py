@@ -1,9 +1,11 @@
 import logging
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
 from app.config import Settings
+from app.services.cancellation import GenerationCancelledError
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +33,14 @@ class LLMBackend(Protocol):
         messages: list[dict],
         enable_thinking: bool,
         max_new_tokens: int,
-    ) -> GenerationResult: ...
+        cancel_event: threading.Event | None = None,
+    ) -> GenerationResult:
+        """Generate a reply.
+
+        If cancel_event is given and gets set while generating, the backend
+        must stop as soon as possible and raise GenerationCancelledError.
+        """
+        ...
 
 
 class TransformersBackend:
@@ -85,6 +94,7 @@ class TransformersBackend:
         messages: list[dict],
         enable_thinking: bool,
         max_new_tokens: int,
+        cancel_event: threading.Event | None = None,
     ) -> GenerationResult:
         prompt_text = self._tokenizer.apply_chat_template(
             messages,
@@ -94,15 +104,44 @@ class TransformersBackend:
         )
         inputs = self._tokenizer([prompt_text], return_tensors="pt").to(self._device)
 
+        extra_kwargs = {}
+        if cancel_event is not None:
+            extra_kwargs["stopping_criteria"] = self._build_cancel_criteria(cancel_event)
+
         output_ids = self._model.generate(
             **inputs,
             max_new_tokens=max_new_tokens,
             temperature=self._settings.temperature,
+            **extra_kwargs,
         )
+
+        if cancel_event is not None and cancel_event.is_set():
+            raise GenerationCancelledError("Generation cancelled by user")
 
         generated_ids = output_ids[0][inputs["input_ids"].shape[1]:]
         text = self._tokenizer.decode(generated_ids, skip_special_tokens=True)
         return GenerationResult(text=text, completion_tokens=int(generated_ids.shape[0]))
+
+    @staticmethod
+    def _build_cancel_criteria(cancel_event: threading.Event):
+        """Stopping criteria that ends generation once cancel_event is set.
+
+        transformers calls it after every generated token. Imports are local
+        so the llama.cpp backend never needs torch/transformers installed.
+        """
+        import torch
+        from transformers import StoppingCriteria, StoppingCriteriaList
+
+        class _CancelCriteria(StoppingCriteria):
+            def __call__(self, input_ids, scores, **kwargs):
+                return torch.full(
+                    (input_ids.shape[0],),
+                    cancel_event.is_set(),
+                    dtype=torch.bool,
+                    device=input_ids.device,
+                )
+
+        return StoppingCriteriaList([_CancelCriteria()])
 
     def _resolve_device(self) -> str:
         if self._settings.device != "auto":
@@ -120,6 +159,9 @@ class LlamaCppBackend:
     template: when thinking is disabled, an empty <think></think> block is
     prefilled so the model skips the reasoning phase (same as the HF template
     does with enable_thinking=False).
+
+    Generation runs in streaming mode so the loop can check for cancellation
+    after every token.
     """
 
     _STOP_STRINGS = ["<|im_end|>"]
@@ -174,6 +216,7 @@ class LlamaCppBackend:
         messages: list[dict],
         enable_thinking: bool,
         max_new_tokens: int,
+        cancel_event: threading.Event | None = None,
     ) -> GenerationResult:
         prompt = self._build_prompt(messages, enable_thinking)
         prompt_tokens = self._llm.tokenize(prompt.encode("utf-8"), add_bos=False, special=True)
@@ -186,18 +229,33 @@ class LlamaCppBackend:
                 "Reduce the history/RAG context or increase LLAMA_N_CTX."
             )
 
-        result = self._llm.create_completion(
+        stream = self._llm.create_completion(
             prompt=prompt_tokens,
             max_tokens=min(max_new_tokens, available),
             temperature=self._settings.temperature,
             top_p=self._settings.llama_top_p,
             top_k=self._settings.llama_top_k,
             stop=self._STOP_STRINGS,
+            stream=True,
         )
 
-        text = result["choices"][0]["text"]
-        completion_tokens = result["usage"]["completion_tokens"]
-        return GenerationResult(text=text, completion_tokens=completion_tokens)
+        text_parts: list[str] = []
+        # In streaming mode there is no usage block, so each chunk is counted
+        # as one token. This is only used for the throughput log line.
+        completion_tokens = 0
+
+        try:
+            for chunk in stream:
+                if cancel_event is not None and cancel_event.is_set():
+                    raise GenerationCancelledError("Generation cancelled by user")
+                text_parts.append(chunk["choices"][0]["text"])
+                completion_tokens += 1
+        finally:
+            close = getattr(stream, "close", None)
+            if close is not None:
+                close()
+
+        return GenerationResult(text="".join(text_parts), completion_tokens=completion_tokens)
 
     @staticmethod
     def _build_prompt(messages: list[dict], enable_thinking: bool) -> str:

@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.core.database import get_db
+from app.services.cancellation import CancellationRegistry
 from app.services.chat_service import ChatService
 from app.services.file_service import FileService
 from app.services.history_service import HistoryService
@@ -32,6 +33,16 @@ def get_model_service() -> ModelService:
     overridable FastAPI dependency for tests via `dependency_overrides`.
     """
     return ModelService(settings=get_settings())
+
+
+@lru_cache
+def get_cancellation_registry() -> CancellationRegistry:
+    """Singleton registry shared by /chat and /chat/stop.
+
+    Must be a singleton: the stop request has to see the same events that
+    the in-flight chat request registered.
+    """
+    return CancellationRegistry()
 
 
 @lru_cache
@@ -81,6 +92,7 @@ def get_chat_service(
     file_service: FileService = Depends(get_file_service),
     rag_service: RagService = Depends(get_rag_service),
     history_service: HistoryService = Depends(get_history_service),
+    cancellation_registry: CancellationRegistry = Depends(get_cancellation_registry),
 ) -> ChatService:
     return ChatService(
         model_service=model_service,
@@ -88,6 +100,7 @@ def get_chat_service(
         file_service=file_service,
         rag_service=rag_service,
         history_service=history_service,
+        cancellation_registry=cancellation_registry,
     )
 
 
