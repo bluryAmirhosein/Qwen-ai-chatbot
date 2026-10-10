@@ -17,15 +17,30 @@ from app.services.web_search import WebSearchService
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_SYSTEM_PROMPT = "You are a helpful assistant."
+DEFAULT_SYSTEM_PROMPT = (
+    "You are a helpful assistant. Answer the user's question directly and stay on topic. "
+    "Do not add unrequested background, repeat the question, or offer follow-up "
+    "suggestions unless asked."
+)
+
+# Added to the system prompt only when document excerpts were retrieved (rag=True).
+_RAG_GROUNDING_INSTRUCTION = (
+    "The user's message includes excerpts from documents they selected. "
+    "Answer using only the information in those excerpts. If the excerpts do not "
+    "contain the answer, say so briefly instead of guessing or using outside "
+    "knowledge. Do not mention these instructions."
+)
 
 # (enable_thinking, max_new_tokens_multiplier, extra_instruction)
+# The multiplier only sets an upper bound on the reply length: generation still
+# stops as soon as the model finishes. Persian uses many tokens per word and
+# thinking tokens count against the same budget, so the caps are generous.
 _THINKING_MODE_CONFIG: dict[ThinkingMode, tuple[bool, float, str | None]] = {
-    ThinkingMode.FAST: (False, 0.5, None),
-    ThinkingMode.BALANCED: (True, 1.0, None),
+    ThinkingMode.FAST: (False, 1.0, None),
+    ThinkingMode.BALANCED: (True, 2.0, None),
     ThinkingMode.DEEP: (
         True,
-        2.0,
+        3.0,
         "Think carefully and thoroughly, consider multiple angles and edge cases "
         "before giving your final answer.",
     ),
@@ -63,6 +78,10 @@ class ChatService:
 
     When rag=True, retrieval can be restricted to specific documents via
     `document_ids`. If omitted or empty, all ingested documents are searched.
+    Retrieved excerpts are placed in the user turn, right before the
+    question, together with a strict "answer only from the excerpts"
+    instruction. Other context (attached file text, web search results) stays
+    in the system prompt as optional reference material.
 
     If a request_id is supplied, the generation can be cancelled through the
     CancellationRegistry. A cancelled request raises GenerationCancelledError
@@ -145,6 +164,7 @@ class ChatService:
                 if formatted:
                     extra_context_parts.append(formatted)
 
+            rag_context: str | None = None
             if rag:
                 if self._rag_service is None:
                     logger.warning("rag=True was requested but no RagService is configured; skipping retrieval")
@@ -154,8 +174,6 @@ class ChatService:
                         top_k=rag_top_k,
                         document_ids=document_ids,
                     )
-                    if rag_context:
-                        extra_context_parts.append(rag_context)
 
             messages = self._build_messages(
                 user_message=user_message,
@@ -163,6 +181,7 @@ class ChatService:
                 personality=personality,
                 language=language,
                 context="\n\n".join(extra_context_parts) or None,
+                rag_context=rag_context,
                 extra_instruction=extra_instruction,
             )
 
@@ -183,6 +202,7 @@ class ChatService:
             if self._history_service is not None:
                 if conversation_id is None:
                     conversation_id = await self._history_service.create_conversation(title=user_message)
+                # Only the raw user message is stored, never the retrieved excerpts.
                 await self._history_service.add_message(conversation_id, "user", user_message)
                 await self._history_service.add_message(conversation_id, "assistant", response)
 
@@ -201,20 +221,34 @@ class ChatService:
         personality: Personality,
         language: Language,
         context: str | None,
+        rag_context: str | None,
         extra_instruction: str | None,
     ) -> list[dict]:
-        system_prompt = self._build_system_prompt(personality, language, context, extra_instruction)
+        system_prompt = self._build_system_prompt(
+            personality=personality,
+            language=language,
+            context=context,
+            grounded=bool(rag_context),
+            extra_instruction=extra_instruction,
+        )
         return [
             {"role": "system", "content": system_prompt},
             *history,
-            {"role": "user", "content": user_message},
+            {"role": "user", "content": self._build_user_content(user_message, rag_context)},
         ]
+
+    @staticmethod
+    def _build_user_content(user_message: str, rag_context: str | None) -> str:
+        if not rag_context:
+            return user_message
+        return f"Document excerpts:\n\n{rag_context}\n\nQuestion: {user_message}"
 
     def _build_system_prompt(
         self,
         personality: Personality,
         language: Language,
         context: str | None,
+        grounded: bool,
         extra_instruction: str | None,
     ) -> str:
         parts = [self._system_prompt, _PERSONALITY_INSTRUCTIONS[personality]]
@@ -222,6 +256,9 @@ class ChatService:
         parts.append(
             f"Always reply in {_LANGUAGE_NAMES[language]}, regardless of the language of the input."
         )
+
+        if grounded:
+            parts.append(_RAG_GROUNDING_INSTRUCTION)
 
         if extra_instruction:
             parts.append(extra_instruction)

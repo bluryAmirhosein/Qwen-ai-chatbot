@@ -28,15 +28,19 @@ class Settings(BaseSettings):
     # Point this to a drive with enough free space, e.g. D:/ai-models/qwen3-1.7b
     model_cache_dir: str = "./model_cache"
     device: str = "auto"  # "auto", "cpu" or "cuda"
-    max_new_tokens: int = 512
-    temperature: float = 0.7
+    # Upper bound on generated tokens before the thinking-mode multiplier is applied.
+    # Persian needs many tokens per word, so a low cap cuts replies off mid-sentence.
+    max_new_tokens: int = 768
+    # Lower values keep a small model focused on the question and the retrieved context.
+    temperature: float = 0.3
 
     # Inference backend: "transformers" (HF weights) or "llama_cpp" (quantized GGUF).
     model_backend: Literal["transformers", "llama_cpp"] = "transformers"
     # Absolute path to the .gguf file (only used when model_backend == "llama_cpp").
     gguf_model_path: str = ""
     # Context window in tokens: prompt (history + RAG + system) + generated tokens must fit.
-    llama_n_ctx: int = 4096
+    # If it is too small, the reply cap is silently reduced to whatever space is left.
+    llama_n_ctx: int = 8192
     # None lets llama.cpp pick a default. Set to the number of physical CPU cores for best speed.
     llama_n_threads: int | None = None
     # Prompt-processing batch size.
