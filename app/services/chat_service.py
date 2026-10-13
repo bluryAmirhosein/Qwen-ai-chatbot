@@ -13,6 +13,7 @@ from app.services.file_service import FileService
 from app.services.history_service import HistoryService
 from app.services.model_service import ModelService
 from app.services.rag.rag_service import RagService
+from app.services.tables.table_query_service import TableQueryOutcome, TableQueryService
 from app.services.web_search import WebSearchService
 
 logger = logging.getLogger(__name__)
@@ -29,6 +30,18 @@ _RAG_GROUNDING_INSTRUCTION = (
     "Answer using only the information in those excerpts. If the excerpts do not "
     "contain the answer, say so briefly instead of guessing or using outside "
     "knowledge. Do not mention these instructions."
+)
+
+# Added instead of the excerpt-only instruction when an exact SQL result from
+# the user's tables is part of the user message (with or without excerpts).
+_TABLE_GROUNDING_INSTRUCTION = (
+    "The user's message includes the exact result of a SQL query that was run on the tables "
+    "of the files they selected, and possibly excerpts from other documents. Answer using only "
+    "that information. Treat the SQL result as the ground truth: report its numbers and rows "
+    "exactly as given and never recalculate, round differently or invent values. If the result "
+    "says it is truncated, tell the user that only part of the rows is shown. If the query "
+    "failed or the information is missing, say so briefly instead of guessing. Do not mention "
+    "these instructions."
 )
 
 # (enable_thinking, max_new_tokens_multiplier, extra_instruction)
@@ -78,10 +91,18 @@ class ChatService:
 
     When rag=True, retrieval can be restricted to specific documents via
     `document_ids`. If omitted or empty, all ingested documents are searched.
-    Retrieved excerpts are placed in the user turn, right before the
-    question, together with a strict "answer only from the excerpts"
-    instruction. Other context (attached file text, web search results) stays
-    in the system prompt as optional reference material.
+
+    CSV/Excel documents are answered exactly through TableQueryService: the
+    model writes a SQL query, it is executed, and the exact result is placed
+    in the user turn. Documents covered by a table result are then left out
+    of the semantic retrieval, which still serves all other documents (Word,
+    PDF, text). If the question is not a table question, the regular
+    semantic retrieval runs over all selected documents.
+
+    Retrieved excerpts and table results are placed in the user turn, right
+    before the question, together with a strict grounding instruction. Other
+    context (attached file text, web search results) stays in the system
+    prompt as optional reference material.
 
     If a request_id is supplied, the generation can be cancelled through the
     CancellationRegistry. A cancelled request raises GenerationCancelledError
@@ -96,6 +117,7 @@ class ChatService:
         rag_service: RagService | None = None,
         history_service: HistoryService | None = None,
         cancellation_registry: CancellationRegistry | None = None,
+        table_query_service: TableQueryService | None = None,
         system_prompt: str = DEFAULT_SYSTEM_PROMPT,
     ):
         self._model_service = model_service
@@ -104,6 +126,7 @@ class ChatService:
         self._rag_service = rag_service
         self._history_service = history_service
         self._cancellations = cancellation_registry
+        self._table_query_service = table_query_service
         self._system_prompt = system_prompt
 
     async def get_response(
@@ -165,15 +188,30 @@ class ChatService:
                     extra_context_parts.append(formatted)
 
             rag_context: str | None = None
+            table_outcome: TableQueryOutcome | None = None
             if rag:
                 if self._rag_service is None:
                     logger.warning("rag=True was requested but no RagService is configured; skipping retrieval")
                 else:
-                    rag_context = await self._rag_service.retrieve_context(
-                        user_message,
-                        top_k=rag_top_k,
-                        document_ids=document_ids,
-                    )
+                    try:
+                        if self._table_query_service is not None:
+                            table_outcome = await self._table_query_service.run(
+                                user_message,
+                                document_ids=document_ids,
+                                history=history,
+                                cancel_event=cancel_event,
+                            )
+                    except GenerationCancelledError:
+                        logger.info("Table query cancelled by user (request_id=%s)", request_id)
+                        raise
+
+                    excerpt_ids, skip_retrieval = await self._resolve_excerpt_scope(document_ids, table_outcome)
+                    if not skip_retrieval:
+                        rag_context = await self._rag_service.retrieve_context(
+                            user_message,
+                            top_k=rag_top_k,
+                            document_ids=excerpt_ids,
+                        )
 
             messages = self._build_messages(
                 user_message=user_message,
@@ -182,6 +220,7 @@ class ChatService:
                 language=language,
                 context="\n\n".join(extra_context_parts) or None,
                 rag_context=rag_context,
+                table_outcome=table_outcome,
                 extra_instruction=extra_instruction,
             )
 
@@ -202,7 +241,8 @@ class ChatService:
             if self._history_service is not None:
                 if conversation_id is None:
                     conversation_id = await self._history_service.create_conversation(title=user_message)
-                # Only the raw user message is stored, never the retrieved excerpts.
+                # Only the raw user message is stored, never the retrieved excerpts
+                # or table results.
                 await self._history_service.add_message(conversation_id, "user", user_message)
                 await self._history_service.add_message(conversation_id, "assistant", response)
 
@@ -214,6 +254,29 @@ class ChatService:
     def extract_file_text(self, file) -> str:
         return self._file_service.extract_text(file)
 
+    async def _resolve_excerpt_scope(
+        self,
+        document_ids: list[int] | None,
+        table_outcome: TableQueryOutcome | None,
+    ) -> tuple[list[int] | None, bool]:
+        """Decide which documents semantic retrieval should search.
+
+        Returns (document_ids_for_retrieval, skip_retrieval). Documents whose
+        tables were already queried exactly are excluded, so their row-level
+        chunks do not dilute the prompt.
+        """
+        if table_outcome is None:
+            return document_ids, False
+
+        covered = set(table_outcome.table_document_ids)
+        if document_ids:
+            candidates = list(document_ids)
+        else:
+            candidates = [doc["id"] for doc in await self._rag_service.list_documents()]
+
+        remaining = [doc_id for doc_id in candidates if doc_id not in covered]
+        return remaining, not remaining
+
     def _build_messages(
         self,
         user_message: str,
@@ -222,33 +285,60 @@ class ChatService:
         language: Language,
         context: str | None,
         rag_context: str | None,
+        table_outcome: TableQueryOutcome | None,
         extra_instruction: str | None,
     ) -> list[dict]:
         system_prompt = self._build_system_prompt(
             personality=personality,
             language=language,
             context=context,
-            grounded=bool(rag_context),
+            has_excerpts=bool(rag_context),
+            has_table_result=table_outcome is not None,
             extra_instruction=extra_instruction,
         )
         return [
             {"role": "system", "content": system_prompt},
             *history,
-            {"role": "user", "content": self._build_user_content(user_message, rag_context)},
+            {
+                "role": "user",
+                "content": self._build_user_content(user_message, rag_context, table_outcome),
+            },
         ]
 
     @staticmethod
-    def _build_user_content(user_message: str, rag_context: str | None) -> str:
-        if not rag_context:
+    def _build_user_content(
+        user_message: str,
+        rag_context: str | None,
+        table_outcome: TableQueryOutcome | None,
+    ) -> str:
+        sections: list[str] = []
+
+        if table_outcome is not None:
+            if table_outcome.error:
+                sections.append(
+                    "Table query: the computation failed "
+                    f"({table_outcome.error}). No exact result is available."
+                )
+            else:
+                sections.append(
+                    "Exact table query result (computed with SQL on the user's tables):\n"
+                    f"SQL: {table_outcome.sql}\n\n{table_outcome.result_text}"
+                )
+
+        if rag_context:
+            sections.append(f"Document excerpts:\n\n{rag_context}")
+
+        if not sections:
             return user_message
-        return f"Document excerpts:\n\n{rag_context}\n\nQuestion: {user_message}"
+        return "\n\n".join(sections) + f"\n\nQuestion: {user_message}"
 
     def _build_system_prompt(
         self,
         personality: Personality,
         language: Language,
         context: str | None,
-        grounded: bool,
+        has_excerpts: bool,
+        has_table_result: bool,
         extra_instruction: str | None,
     ) -> str:
         parts = [self._system_prompt, _PERSONALITY_INSTRUCTIONS[personality]]
@@ -257,7 +347,9 @@ class ChatService:
             f"Always reply in {_LANGUAGE_NAMES[language]}, regardless of the language of the input."
         )
 
-        if grounded:
+        if has_table_result:
+            parts.append(_TABLE_GROUNDING_INSTRUCTION)
+        elif has_excerpts:
             parts.append(_RAG_GROUNDING_INSTRUCTION)
 
         if extra_instruction:

@@ -21,8 +21,10 @@ from app.services.history_service import HistoryService
 from app.services.model_service import ModelService
 from app.services.rag.embedding_service import EmbeddingService
 from app.services.rag.rag_service import RagService
-from app.services.web_search import WebSearchService
 from app.services.summarizer_service import SummarizerService
+from app.services.tables.table_query_service import TableQueryService
+from app.services.tables.table_store import TableStore
+from app.services.web_search import WebSearchService
 
 
 @lru_cache
@@ -68,6 +70,17 @@ def get_embedding_service() -> EmbeddingService:
     )
 
 
+@lru_cache
+def get_table_store() -> TableStore:
+    """Singleton TableStore (stateless apart from its configuration).
+
+    An optional `tables_readonly_role` setting (env TABLES_READONLY_ROLE)
+    makes model-written SQL run under that restricted database role.
+    """
+    settings = get_settings()
+    return TableStore(readonly_role=getattr(settings, "tables_readonly_role", None))
+
+
 def get_history_service(session: AsyncSession = Depends(get_db)) -> HistoryService:
     """Request-scoped: HistoryService now owns an AsyncSession, so it can no
     longer be an lru_cache singleton — each request gets its own session."""
@@ -78,12 +91,22 @@ def get_rag_service(
     session: AsyncSession = Depends(get_db),
     file_service: FileService = Depends(get_file_service),
     embedding_service: EmbeddingService = Depends(get_embedding_service),
+    table_store: TableStore = Depends(get_table_store),
 ) -> RagService:
     return RagService(
         session=session,
         file_service=file_service,
         embedding_service=embedding_service,
+        table_store=table_store,
     )
+
+
+def get_table_query_service(
+    model_service: ModelService = Depends(get_model_service),
+    rag_service: RagService = Depends(get_rag_service),
+) -> TableQueryService:
+    """Request-scoped: it runs queries through the request's RagService/session."""
+    return TableQueryService(model_service=model_service, rag_service=rag_service)
 
 
 def get_chat_service(
@@ -93,6 +116,7 @@ def get_chat_service(
     rag_service: RagService = Depends(get_rag_service),
     history_service: HistoryService = Depends(get_history_service),
     cancellation_registry: CancellationRegistry = Depends(get_cancellation_registry),
+    table_query_service: TableQueryService = Depends(get_table_query_service),
 ) -> ChatService:
     return ChatService(
         model_service=model_service,
@@ -101,6 +125,7 @@ def get_chat_service(
         rag_service=rag_service,
         history_service=history_service,
         cancellation_registry=cancellation_registry,
+        table_query_service=table_query_service,
     )
 
 
